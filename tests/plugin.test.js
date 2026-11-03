@@ -58,6 +58,18 @@ test('cordis.patch.yml 的 id 与导出 name 同串，name 与包名同串', () 
   assert.equal(JSON.parse(fs.readFileSync(path.join(ROOT, 'dsh.plugin.json'), 'utf8')).main, './' + pkg.main)
 })
 
+test('装载身份：manifest.id 必须是包名，@deepseek-ai/dsh* peer 必须在（兼容性闸门只读它）', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'dsh.plugin.json'), 'utf8'))
+  // VD-017-020-06：bundle 挂载 id ≠ 包名 → client 半从不加载
+  assert.equal(manifest.id, pkg.name, 'dsh.plugin.json#id 必须等于包名')
+  // 核心定论 §1：宿主只读 @deepseek-ai/dsh | dsh-* 前缀的 peer；一个都没有 = 对所有线恒判兼容
+  const dshPeers = Object.keys(pkg.peerDependencies ?? {}).filter((k) => /^@deepseek-ai\/dsh(-|$)/.test(k))
+  assert.ok(dshPeers.length > 0, 'peerDependencies 缺少 @deepseek-ai/dsh* 项，闸门将失去拒载能力')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-renderer'], manifest.engines.dsh,
+    'renderer peer 必须与 engines.dsh 逐串相同（hosts.mjs 单源）')
+})
+
 test('双清单一致：engines.dsh 三处逐串相等', () => {
   const range = orRange(HOSTS)
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))

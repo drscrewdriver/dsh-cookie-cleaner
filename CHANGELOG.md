@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2 (2026-11-04)
+
+装载身份与兼容性闸门修复（为后续 client 面板做准备）。
+
+- `dsh.plugin.json#id`：`dsh-external/dsh-cookie-cleaner` → `dsh-cookie-cleaner`（= 包名）。
+  挂载 id 不等于包名时 client 半从不加载（VD-017-020-06），不修则以后加面板必定白做。
+- `peerDependencies` 补 `@deepseek-ai/dsh-client-ui-renderer`（optional）。兼容性闸门
+  **只读 `@deepseek-ai/dsh`/`dsh-*` 前缀的 peer range**，不读 `engines.dsh`：0.1.0/0.1.1 一个
+  `dsh*` peer 都没有 → 对所有宿主线恒判兼容，宿主换代时不会干净拒载，而是装载后
+  运行期报错。现由 `scripts/sync-hosts.mjs` 从 `scripts/hosts.mjs` 单源下发，与 `engines.dsh` 逐串相同。
+- 门禁：双清单校验加入 renderer peer 一项；新测试钉住「manifest.id = 包名」与
+  「至少有一个 `@deepseek-ai/dsh*` peer，且 renderer peer 与 engines.dsh 同串」。
+
 ## 0.1.1 (2026-11-04)
 
 跨平台支持（macOS / Linux）与 9 语分发。

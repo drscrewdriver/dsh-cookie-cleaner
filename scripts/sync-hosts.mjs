@@ -17,6 +17,7 @@ const failures = []
 
 const pkgPath = path.join(ROOT, 'package.json')
 const manifestPath = path.join(ROOT, 'dsh.plugin.json')
+const RENDERER = '@deepseek-ai/dsh-client-ui-renderer'
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
 
@@ -30,6 +31,9 @@ compare('package.json#engines.dsh', pkg.engines?.dsh, range)
 compare('package.json#dsh.compatibility.dshReleases', pkg.dsh?.compatibility?.dshReleases, releases)
 compare('dsh.plugin.json#engines.dsh', manifest.engines?.dsh, range)
 compare('dsh.plugin.json#version', manifest.version, pkg.version)
+// 兼容性闸门只读 @deepseek-ai/dsh* 前缀的 peer range（不读 engines.dsh），
+// 所以这张卡漏不得：少了它宿主换代时不会拒载，而是装载后运行期报错。
+compare('package.json#peerDependencies[renderer]', pkg.peerDependencies?.[RENDERER], range)
 
 if (check) {
   if (failures.length > 0) {
@@ -42,6 +46,7 @@ if (check) {
   // 版本号以 package.json 为源，把同号刷进 dsh.plugin.json（不然改版本必遗漏一处，V1 闸抓不到）
   pkg.engines = { ...pkg.engines, dsh: range }
   pkg.dsh = { ...pkg.dsh, compatibility: { ...pkg.dsh?.compatibility, dshReleases: releases } }
+  pkg.peerDependencies = { ...pkg.peerDependencies, [RENDERER]: range }
   manifest.engines = { ...manifest.engines, dsh: range }
   if (manifest.version !== pkg.version) {
     manifest.version = pkg.version
