@@ -9,9 +9,13 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import * as plugin from '../src/index.js'
-import { statCookies } from '../src/core.js'
+import { statCookies, setLang } from '../src/core.js'
 import { cookieCleanerCommandText } from '../src/report.js'
 import { HOSTS, orRange } from '../scripts/hosts.mjs'
+
+// 钉住输出语言：这些断言校的是中文文案，靠探测会在 LANG=C.UTF-8 的机器（如 WSL）上翻英文。
+// 语言本身的差异另有 cli.test.js 的 --lang 专项覆盖。
+setLang('zh')
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 
@@ -99,7 +103,7 @@ test('apply() 只注册命令与设置，命令输出不含写盘动作', (t) =>
   process.env.DSH_USER_DATA = dir
 
   const ctx = makeCtx()
-  const ret = plugin.apply(ctx, { ...plugin.DEFAULT_SETTINGS })
+  const ret = plugin.apply(ctx, { ...plugin.DEFAULT_SETTINGS, lang: 'zh' })
   t.after(() => ctx.dispose())
   assert.equal(ctx.commands.length, 1)
   const def = ctx.commands[0]
@@ -117,7 +121,7 @@ test('apply() 只注册命令与设置，命令输出不含写盘动作', (t) =>
 
 test('commands 服务缺席（headless 线）时只降级，不 fatal', () => {
   const ctx = makeCtx({ withCommands: false })
-  assert.doesNotThrow(() => plugin.apply(ctx, { ...plugin.DEFAULT_SETTINGS }))
+  assert.doesNotThrow(() => plugin.apply(ctx, { ...plugin.DEFAULT_SETTINGS, lang: 'zh' }))
   assert.equal(ctx.commands.length, 0)
   ctx.dispose()
 })
@@ -128,12 +132,27 @@ function dbSnapshot(file) {
 }
 
 test('busy/skipped 两档降级文案都自带下一步，不把人推回 AI', () => {
-  const busy = cookieCleanerCommandText({ verdict: 'warn', reason: 'busy', path: 'X/Cookies' }, {})
+  const busy = cookieCleanerCommandText({ verdict: 'warn', reason: 'busy', path: 'X/Cookies' }, { lang: 'zh' })
   assert.match(busy, /完全退出 DSH 客户端/)
   assert.match(busy, /--clean/)
-  const skipped = cookieCleanerCommandText({ verdict: 'skipped', candidates: ['A', 'B'] }, {})
+  const skipped = cookieCleanerCommandText({ verdict: 'skipped', candidates: ['A', 'B'] }, { lang: 'zh' })
   assert.match(skipped, /Web 版|无需清理/)
   assert.match(skipped, /候选路径/)
+})
+
+test('降级文案跟平台走：mac/linux 不会出现「托盘」这种不存在的东西', () => {
+  const busy = (platform) => cookieCleanerCommandText({ verdict: 'warn', reason: 'busy', path: 'X/Cookies' }, { platform, lang: 'zh' })
+  assert.match(busy('win32'), /托盘/)
+  assert.match(busy('darwin'), /Cmd\+Q|Quit/)
+  assert.ok(!busy('darwin').includes('托盘'))
+  assert.ok(!busy('linux').includes('托盘'))
+  assert.ok(!busy('linux').includes('Cmd+Q'))
+  assert.match(busy('linux'), /--clean/, '三平台都得给出可执行命令')
+
+  const denied = cookieCleanerCommandText({ verdict: 'warn', reason: 'permission', path: '/home/u/.config/x/Network/Cookies' }, { platform: 'linux', lang: 'zh' })
+  assert.match(denied, /权限/)
+  assert.match(denied, /--db=/, '权限档要给出可直接粘贴的另一种入口')
+  assert.ok(!denied.includes('托盘'))
 })
 
 test('cli.js 带 shebang 且已登记为 npm bin', () => {

@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
-import { CookieBusyError, buildDeleteStatement, cleanCookies, describeStat, openDatabase, resolveCookieDbs, statCookies } from '../src/core.js'
+import { CookieBusyError, buildDeleteStatement, classifyOpenFailure, cleanCookies, describeStat, exitInstruction, resolveCookieDbs, setLang, statCookies } from '../src/core.js'
 
 const EPOCH_OFFSET = 11_644_473_600_000_000
 const MICRO = (ms) => ms * 1000 + EPOCH_OFFSET
@@ -146,14 +146,20 @@ test('显式指定的库不存在 → CookieBusyError（带处置文案，不静
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   assert.throws(
     () => cleanCookies({ explicitPath: path.join(root, 'Cookies'), timestamp: () => 'stamp' }),
-    (e) => e instanceof CookieBusyError && /完全退出 DSH 客户端/.test(e.message),
+    (e) => e instanceof CookieBusyError && e.kind === 'missing' && /不在这里|--db=/.test(e.message),
   )
   assert.equal(fs.existsSync(path.join(root, 'Cookies.bak-stamp')), false)
 })
 
-test('openDatabase 打不开时包成 CookieBusyError（带处置文案）', (t) => {
-  const file = tempDb(t)
-  assert.throws(() => openDatabase(file, { write: true }), (e) => e instanceof CookieBusyError && /完全退出 DSH 客户端/.test(e.message))
+test('占用档才提“完全退出客户端”，不存在档不拿它误人', () => {
+  // 真机 busy 很难稳靠模拟（取决于是否有并发持有者），这里直接给 classify 定档；
+  // 真占用形态已在 WSL 实跑中校对过（node:sqlite 只报 unable to open database file）。
+  const busy = new CookieBusyError('/tmp/Cookies', new Error('unable to open database file'), 'linux', () => 'busy')
+  assert.equal(busy.code, 'cookie-busy')
+  assert.match(busy.message, /完全退出 DSH 客户端/)
+  assert.ok(!busy.message.includes('托盘'), 'linux 平台不得给 Windows 专属动作')
+  const missing = new CookieBusyError('/tmp/Cookies', new Error('nope'), 'win32', () => 'missing')
+  assert.ok(!missing.message.includes('完全退出'), 'missing 档不该把人引向“关客户端”')
 })
 
 test('resolveCookieDbs 只认存在的文件，忽略目录', (t) => {
@@ -166,6 +172,105 @@ test('resolveCookieDbs 只认存在的文件，忽略目录', (t) => {
   assert.equal(found.length, 1)
   assert.equal(found[0].path, file)
   assert.ok(found[0].bytes > 0)
+})
+
+test('WAL 库（POSIX 形态）：备份连带 -wal；单个 sidecar 拷不上也不得拦停清理', (t) => {
+  const file = makeCookieDb(tempDb(t), STALE_ROWS)
+  const walFile = `${file}-wal`
+  const shmFile = `${file}-shm`
+
+  // 第一段：真 WAL 库，关掉连接后 -wal 仍在（未被 checkpoint 的行在里面）
+  const wal = new DatabaseSync(file)
+  wal.exec('PRAGMA journal_mode = WAL')
+  wal.prepare("INSERT INTO cookies (creation_utc, host_key, top_frame_site_key, name, value, path, expires_utc, is_secure, is_httponly, last_access_utc) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(BigInt(MICRO(1_700_000_000_000)), 'localhost', '', AUTH('wal-only'), 'v', '/', BigInt(MICRO(Date.now() + 86_400_000)), 0, 1, BigInt(MICRO(1_700_000_000_000)))
+  wal.close()
+  const hadWal = fs.existsSync(walFile)
+
+  const first = cleanCookies({ explicitPath: file, timestamp: () => 'stamp-a' })
+  assert.ok(first.deleted >= 3)
+  assert.ok(fs.existsSync(`${file}.bak-stamp-a`), '主库副本必须落盘')
+  if (hadWal) assert.ok(first.backupSidecars.includes('-wal'), '-wal 存在时应被带走')
+
+  // 第二段：伪造一个拷不上的 -shm（真机上被并发连接持有），主副本成功即不得抛错
+  fs.writeFileSync(shmFile, 'x')
+  const second = cleanCookies({ explicitPath: file, timestamp: () => 'stamp-b', ...busySidecarSpy(shmFile) })
+  assert.equal(second.ok, true, 'sidecar 失败只能记为跳过，不能整单放弃')
+  assert.ok(second.skippedSidecars.includes('-shm'))
+  assert.ok(fs.existsSync(`${file}.bak-stamp-b`))
+})
+
+/** 指定文件上的 copyFile 抛 EBUSY，其余照常转发。 */
+function busySidecarSpy(lockedFile) {
+  return {
+    DatabaseSync: class extends DatabaseSync {},
+    copyFile: (from, to) => {
+      if (from === lockedFile) {
+        const e = new Error(`EBUSY: resource busy or locked, copyfile '${from}'`)
+        e.code = 'EBUSY'
+        throw e
+      }
+      fs.copyFileSync(from, to)
+    },
+  }
+}
+
+test('分档靠探测而非错误码：实测 node:sqlite 权限不足也不报 EACCES', () => {
+  // 四档各跑一遍：kind → 文案/错误码的映射必须一一对应，不能全抵“客户端在跑”
+  const cases = [
+    ['busy', 'cookie-busy', /独占|Chromium|完全退出/],
+    ['unreadable', 'cookie-unreadable', /权限|读不了|cannot read/],
+    ['not-owned', 'cookie-not-owned', /另一个用户|belongs to another user/],
+    ['missing', 'cookie-missing', /不在这里|--db=/],
+  ]
+  for (const [kind, code, expect] of cases) {
+    const err = new CookieBusyError('/tmp/Cookies', new Error('unable to open database file'), 'linux', () => kind)
+    assert.equal(err.code, code, `${kind} 归到 wrong code`)
+    assert.equal(err.kind, kind)
+    assert.ok(expect.test(err.message), `${kind} 文案不对：${err.message}`)
+  }
+})
+
+test('真文件系统归因：不存在=missing，可读=busy', (t) => {
+  const file = makeCookieDb(tempDb(t), STALE_ROWS)
+  assert.equal(classifyOpenFailure(file), 'busy', '可读且存在的库只能算占用（写入被拒时）')
+  assert.equal(classifyOpenFailure(path.join(path.dirname(file), 'nope')), 'missing')
+  const stat = statCookies({ explicitPath: path.join(path.dirname(file), 'nope') })
+  assert.equal(stat.reason, 'missing')
+  assert.match(describeStat(stat), /不在这个位置|从未起过/)
+})
+
+test('POSIX 专属：chmod 000 应走 unreadable 而非 busy', { skip: process.platform === 'win32' && 'POSIX only' }, (t) => {
+  // 选一个真正支持 POSIX 权限的目录：WSL 下 os.tmpdir() 可能是 /mnt/*（drvfs），chmod 会静默失效。
+  const root = fs.existsSync('/tmp') ? '/tmp' : os.tmpdir()
+  const dir = fs.mkdtempSync(path.join(root, 'dcc-perm-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = makeCookieDb(path.join(dir, 'Cookies'), STALE_ROWS)
+  fs.chmodSync(file, 0o000)
+  t.after(() => { try { fs.chmodSync(file, 0o644) } catch { /* 已收 */ } })
+  if ((fs.statSync(file).mode & 0o777) !== 0o000) {
+    t.skip('本层文件系统的 chmod 不生效（挂载盘之类），不适用本用例')
+    return
+  }
+  assert.equal(classifyOpenFailure(file), 'unreadable')
+  const stat = statCookies({ explicitPath: file })
+  assert.equal(stat.reason, 'permission', 'unreadable/not-owned 统一归到 permission 档')
+  assert.match(describeStat(stat), /无权限|读不了/)
+  // 占用档的指引得跟平台走（Linux 上提「托盘」就是纸面支持）
+  assert.match(exitInstruction('linux'), /主窗口|进程/)
+  assert.ok(!exitInstruction('linux').includes('托盘'))
+})
+
+test('输出语言不影响判定：9 语都有各自的 missing 统计行', (t) => {
+  const file = makeCookieDb(tempDb(t), STALE_ROWS)
+  const missing = path.join(path.dirname(file), 'nope')
+  t.after(() => setLang('zh'))
+  for (const lang of ['zh', 'en', 'ja', 'ko', 'fr', 'de', 'it', 'ru', 'es']) {
+    setLang(lang)
+    const out = describeStat(statCookies({ explicitPath: missing }))
+    assert.ok(out.length > 10, `${lang} 统计行为空`)
+    assert.ok(!/\{path\}/.test(out), `${lang} 漏插值：${out}`)
+  }
 })
 
 test('删除语句与统计口径一致：LIKE 前缀 + host_key 白名单', () => {

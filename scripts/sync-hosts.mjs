@@ -39,10 +39,14 @@ if (check) {
     process.stdout.write(`双清单一致（${HOSTS.length} 条宿主线）\n`)
   }
 } else if (failures.length > 0) {
+  // 版本号以 package.json 为源，把同号刷进 dsh.plugin.json（不然改版本必遗漏一处，V1 闸抓不到）
   pkg.engines = { ...pkg.engines, dsh: range }
   pkg.dsh = { ...pkg.dsh, compatibility: { ...pkg.dsh?.compatibility, dshReleases: releases } }
   manifest.engines = { ...manifest.engines, dsh: range }
-  manifest.version = pkg.version
+  if (manifest.version !== pkg.version) {
+    manifest.version = pkg.version
+    process.stdout.write(`dsh.plugin.json#version 同步为 ${pkg.version}\n`)
+  }
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8')
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8')
   process.stdout.write(`已同步 ${HOSTS.length} 条宿主线到 package.json / dsh.plugin.json\n`)

@@ -1,6 +1,6 @@
 {
   "name": "dsh-cookie-cleaner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cookie cleaner for DeepSeek Harness: reports the local dsh-auth-* entries left in the desktop client's Chromium cookie store and ships a standalone command that purges them once the client is fully closed (backup + atomic transaction, credentials/sessions/plugin config untouched).",
   "type": "module",
   "license": "MIT",
@@ -20,6 +20,7 @@
   "exports": {
     ".": "./src/index.js",
     "./core": "./src/core.js",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -53,9 +54,10 @@
   },
   "scripts": {
     "sync-hosts": "node scripts/sync-hosts.mjs",
+    "gen-locales": "node scripts/gen-locales.mjs",
     "test": "node --test \"tests/*.test.js\"",
     "lint": "eslint .",
-    "gate": "node scripts/sync-hosts.mjs --check && npm run lint && npm test",
+    "gate": "node scripts/sync-hosts.mjs --check && node scripts/gen-locales.mjs --check && npm run lint && npm test",
     "prepack": "npm run gate"
   },
   "dependencies": {
@@ -72,6 +74,7 @@
   "files": [
     "src",
     "scripts",
+    "locale",
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",

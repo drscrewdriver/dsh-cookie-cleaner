@@ -12,7 +12,8 @@
  * 在客户端关闭、宿主插件不存在的那个时间窗里执行。
  */
 import z from '@deepseek-ai/schemastery'
-import { cookieCleanerCommandText, cleanCookies, statCookies } from './report.js'
+import { cookieCleanerCommandText, cleanCookies, setLang, statCookies } from './report.js'
+import { LANGS, detectLang, normalize } from './i18n.js'
 import { installSettingsWaist } from './settings-waist.js'
 
 /** Cordis 插件名（与 cordis.patch.yml 的 id 一致）。 */
@@ -23,11 +24,13 @@ export const inject = []
 export const DEFAULT_SETTINGS = Object.freeze({
   userDataRoot: '', // 覆盖 Electron userData 根（多实例/非默认安装位置用）
   expiredOnly: false, // 保守档：命令与脚本默认只把「已过期」当作可清理对象
+  lang: '', // 输出语言（zh/en/ja/ko/fr/de/it/ru/es）；空=跟环境探测，探不到则 zh
 })
 
 export const Config = z.object({
   userDataRoot: z.string().default(DEFAULT_SETTINGS.userDataRoot).volatile().description('覆盖 Electron userData 根目录（默认按平台惯例自动定位）'),
   expiredOnly: z.boolean().default(DEFAULT_SETTINGS.expiredOnly).volatile().description('保守档：只统计/只提示已过期的 dsh-auth cookie'),
+  lang: z.string().default(DEFAULT_SETTINGS.lang).volatile().description(`输出语言：${LANGS.join('/')}（留空=自动探测）`),
 })
 
 /** volatile 字段/字段级活引用解引出普通值。 */
@@ -70,13 +73,16 @@ export function apply(ctx, config = {}) {
   /** 只读现状 + 处置文案。overrides 可临时换档（`mode:'clean'` 只换措辞，仍不写盘）。 */
   function status(overrides = {}) {
     const cfg = { ...current(), ...overrides }
+    // 设置里显式指定则优先，否则按环境探测（探不到落 zh）。
+    const lang = normalize(cfg.lang || '')
+    setLang(cfg.lang ? lang : detectLang())
     let stat
     try {
       stat = statCookies({ userDataRoot: cfg.userDataRoot })
     } catch (e) {
       stat = { verdict: 'error', message: e && e.message ? e.message : String(e) }
     }
-    return { stat, text: cookieCleanerCommandText(stat, cfg) }
+    return { stat, text: cookieCleanerCommandText(stat, { ...cfg, lang: undefined }) }
   }
 
   // ── 三代设置 waist（0.1.2/0.1.5 installSection、0.1.0/0.1.1 register、0.1.7+ volatile 托管）──

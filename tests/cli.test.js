@@ -31,7 +31,12 @@ function fixture() {
 }
 
 function run(args, env = {}) {
-  return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { ...process.env, DSH_USER_DATA: '', DSH_COOKIE_DB: '', ...env } })
+  // 钉住输出语言：否则同一条断言在中文 Windows 上绿、在 LANG=C.UTF-8 的 Linux 上红——
+  // 那测的是宿主 locale，不是本工具。--lang 专项另测。
+  return spawnSync(process.execPath, [CLI, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, DSH_USER_DATA: '', DSH_COOKIE_DB: '', DSH_COOKIE_LANG: 'zh', DSH_LANG: '', LANG: 'zh_CN.UTF-8', LC_ALL: 'zh_CN.UTF-8', ...env },
+  })
 }
 
 test('CLI status：只给现状与下一步，不写盘', (t) => {
@@ -79,21 +84,37 @@ test('CLI --clean --expired-only：只删过期的那一条', (t) => {
   assert.deepEqual(names, ['dsh-auth-aaa', 'keep-me'])
 })
 
-test('CLI 打不到库时退出码为 1 并说清原因（绝不静默成功）', (t) => {
+test('CLI 打不到库时退出码为 1 并说清原因（给的是 missing 档，不是“客户端在跑”）', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-empty-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const missing = path.join(dir, 'Network', 'Cookies')
-  const status = run(['--db=' + missing])
-  assert.equal(status.status, 1)
-  assert.match(status.stdout + status.stderr, /无法打开|完全退出/)
+  const status = run(['--db=' + missing], { DSH_COOKIE_LANG: 'en' })
+  assert.equal(status.status, 1, '读不到库绝不能退 0（把失败报成成功）')
+  assert.match(status.stdout + status.stderr, /不在这里|不在这个位置|not here|No cookie database|无法打开/)
+  assert.ok(!/托盘|Cmd\+Q/.test(status.stdout + status.stderr), '指引不得预设某个平台')
+  assert.ok(!/完全退出|Quit the DSH/.test(status.stdout + status.stderr), '文件不存在不是“客户端在跑”')
   const clean = run(['--clean', '--db=' + missing])
   assert.equal(clean.status, 1)
+  assert.match(clean.stdout + clean.stderr, /--db=/, 'missing 档必须直接给出可用的 --db 形式')
+})
+
+test('CLI --lang 显式指定优先于探测；缺省跟系统 locale', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-lang-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const missing = path.join(dir, 'Cookies')
+  const de = run(['--db=' + missing, '--lang=de'])
+  assert.match(de.stdout + de.stderr, /Keine Cookie-Datenbank|diese Datei existiert nicht/, de.stdout + de.stderr)
+  const ru = run(['--db=' + missing, '--lang=ru'])
+  assert.match(ru.stdout + ru.stderr, /\u0411\u0430\u0437\u044b cookie/, '俄语档未生效')
+  const neutral = run(['--db=' + missing], { LANG: 'C.UTF-8', LC_ALL: '', LC_MESSAGES: '', DSH_LANG: '', DSH_COOKIE_LANG: '' })
+  assert.match(neutral.stdout + neutral.stderr, /No cookie database/, 'POSIX 中性 locale 应落英文而非中文')
 })
 
 test('CLI --help 与未知参数', () => {
   const help = run(['--help'])
   assert.equal(help.status, 0)
-  assert.match(help.stdout, /退出 DSH 客户端/)
+  assert.match(help.stdout, /dsh-cookie-cleaner --clean/)
+  assert.match(help.stdout, /macOS|Linux/, '帮助里要能看到各平台的库位置')
   const bad = run(['--nope'])
   assert.equal(bad.status, 1)
   assert.match(bad.stderr, /未知参数/)

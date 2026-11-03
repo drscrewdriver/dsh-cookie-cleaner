@@ -3,9 +3,10 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { AUTH_COOKIE_PREFIX, buildDeleteStatement, candidateCookieDbs, formatChromiumTimestamp } from '../src/core.js'
+import { AUTH_COOKIE_PREFIX, buildDeleteStatement, candidateCookieDbs, exitInstruction, formatChromiumTimestamp } from '../src/core.js'
 
 const EPOCH_OFFSET = 11_644_473_600_000_000
+const PRODUCT_DIR_COUNT = 3
 
 test('formatChromiumTimestamp 把 chromium 微秒换成可读 UTC', () => {
   const iso = '2026-11-04T00:00:00.000Z'
@@ -59,6 +60,44 @@ test('buildDeleteStatement 保守档把时间戳作为 BigInt 绑定参数而非
   assert.equal(values.length, 2)
   assert.equal(typeof values[1], 'bigint', '微秒时间戳超 2^53，不能用 Number 绑定')
   assert.ok(values[1] > 0n)
+})
+
+test('candidateCookieDbs：macOS 走 Library/Application Support，不掺 APPDATA/XDG', () => {
+  const list = candidateCookieDbs('', 'darwin', { APPDATA: 'C:\\Roaming', XDG_CONFIG_HOME: '/home/u/cfg', HOME: '/Users/tester' })
+  assert.equal(list[0], '/Users/tester/Library/Application Support/@deepseek-ai/dsh-desktop/Network/Cookies')
+  assert.ok(!list.some((p) => p.includes('Roaming') || p.includes('cfg')))
+  assert.equal(list.length, PRODUCT_DIR_COUNT * 2, '每个候选目录只出 Network/ 与根下两条')
+})
+
+test('candidateCookieDbs：linux 尊重 HOME，XDG 缺时回退 ~/.config', () => {
+  const withXdg = candidateCookieDbs('', 'linux', { XDG_CONFIG_HOME: '/home/u/cfg', HOME: '/home/u' })
+  assert.equal(withXdg[0], '/home/u/cfg/@deepseek-ai/dsh-desktop/Network/Cookies')
+  const bare = candidateCookieDbs('', 'linux', { HOME: '/home/u' })
+  assert.equal(bare[0], '/home/u/.config/@deepseek-ai/dsh-desktop/Network/Cookies')
+})
+
+test('candidateCookieDbs：三平台分隔符各自正确（在 Windows 上跑也不会把 posix 路径写成反斜杠）', () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const list = candidateCookieDbs('/tmp/UD', platform, { HOME: '/tmp/u' })
+    for (const p of list) {
+      if (platform === 'win32') assert.ok(!p.startsWith('/'), 'win32 不应给 posix 路径')
+      else assert.ok(!p.includes('\\'), `${platform} 不应混进反斜杠：${p}`)
+    }
+  }
+})
+
+test('candidateCookieDbs：DSH_COOKIE_DB 给的是库文件本身，也能推出根目录', () => {
+  const list = candidateCookieDbs('', 'linux', { HOME: '/home/u', DSH_COOKIE_DB: '/opt/dsh/Network/Cookies' })
+  assert.equal(list[0], '/opt/dsh/Network/Cookies')
+})
+
+test('exitInstruction：三平台文案不同，托盘字样只会出现在 win32', () => {
+  assert.match(exitInstruction('win32'), /托盘/)
+  assert.match(exitInstruction('darwin'), /Cmd\+Q|Quit/)
+  assert.ok(!exitInstruction('darwin').includes('托盘'))
+  assert.match(exitInstruction('linux'), /主窗口|进程/)
+  assert.ok(!exitInstruction('linux').includes('托盘'))
+  assert.ok(!exitInstruction('linux').includes('Cmd+Q'))
 })
 
 test('buildDeleteStatement 拒绝可疑的 host_key / 前缀', () => {

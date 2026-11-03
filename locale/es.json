@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Limpiador de cookies",
+    "description": "Informa de las entradas dsh-auth-* residuales en el almacén de cookies del cliente de escritorio y ofrece un comando que las purga tras cerrar del todo el cliente."
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Cookie 清理器",
+    "description": "只读播报桌面客户端 cookie 库里残留的 dsh-auth-* 本地登录凭据，并随包分发「客户端完全退出后」可执行的清理命令。"
+  }
+}
