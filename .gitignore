@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.bak-*
+coverage/
+*.tgz
+.compat-results/
+
+Cookies.bak-*
+
