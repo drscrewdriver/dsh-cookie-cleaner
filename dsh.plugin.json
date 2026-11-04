@@ -2,7 +2,7 @@
   "id": "dsh-cookie-cleaner",
   "version": "0.2.0",
   "main": "./src/index.js",
-  "description": "Cookie 清理器：只读播报桌面客户端 cookie 库里残留的本地登录凭据（dsh-auth-*），并随包分发「客户端完全退出后」可执行的清理命令（独占写锁 + .bak 备份，账号凭据/会话/插件配置不受影响）。",
+  "description": "Cookie 清理器：解决桌面客户端启动报 `desktop welcome: Web authentication failed`（HTTP 431，随机端口致 dsh-auth-* cookie 堆积溢出请求头上限）的现象。只读播报 cookie 库里残留的本地登录凭据（dsh-auth-*），随包分发「客户端完全退出后」可执行的清理命令（独占写锁 + .bak 备份，账号凭据/会话/插件配置不受影响）；设置面 patch 可将启动端口固定化，避免按端口累计。",
   "engines": {
     "dsh": "0.1.0-rc.2 || 0.1.0-rc.3 || 0.1.0-rc.6 || 0.1.0-rc.7 || 0.1.0-rc.8 || 0.1.1-rc.1 || 0.1.1-rc.2 || 0.1.2-rc.1 || 0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
   },

@@ -1,6 +1,7 @@
 # dsh-cookie-cleaner
 
 清理 DSH（DeepSeek Harness）**桌面客户端** cookie 库里堆积的本地登录凭据 cookie（`dsh-auth-*`），
+解决的现象是启动报 `desktop welcome: Web authentication failed`（HTTP 431，约 70 次随机端口启动后必现，见下文因果链），
 并把「为什么只能在客户端关闭时清理」讲清楚——不用每次再去问一遍 AI。
 
 输出支持 9 种语言（zh / en / ja / ko / fr / de / it / ru / es），跟随系统 locale。
