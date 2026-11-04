@@ -24,6 +24,14 @@
 > 而那个时刻宿主插件本身并不存在。因此本仓库把执行体做成**包内独立脚本**，
 > 插件半只做只读播报和命令指引，**永不写库**。
 
+堆积的根源是「每次启动一个随机端口」，而上游已有三份独立报告钉到同一条因果链
+（[#11366](https://github.com/deepseek-ai/deepseek-harness/discussions/11366)、
+[#11410](https://github.com/deepseek-ai/deepseek-harness/discussions/11410)、
+[#11650](https://github.com/deepseek-ai/deepseek-harness/discussions/11650)，约 70 次启动后必现 HTTP 431）。
+它们给出的两条用户侧规避（固定 `webserver.port` / 调小 `connection.cookieMaxAgeDays`）就是
+下面「profile patch 体检与修复」面板存在的理由，完整关联见该章的
+[为什么面板要能固定端口](#为什么面板要能固定端口上游三条-discussion-是同一条因果链)。
+
 ## 各平台的库位置与退出方式
 
 | 平台 | cookie 库默认位置 | 完全退出客户端的方式 |
@@ -173,7 +181,47 @@ node src/cli.js patch plan       # 输出可直接粘贴的覆盖行
 离线档只看得到文件层：运行态与 bundle 层的对比（P5/P7/P9）需要客户端起来后由面板或
 `/cookie-cleaner patch check` 来查。**CLI 一律不写 profile**——写只有一把刀，就是宿主那个带校验与回滚的。
 
-### 端口：不自动改，但可一键应用（避开代理工具常用端口）
+### 为什么面板要能固定端口：上游三条 discussion 是同一条因果链
+
+桌面宿主每次启动都用**随机端口**：`apps/desktop-host/src/index.ts` 里 host 的启动参数是
+`['--no-open', '--host', '127.0.0.1', '--port', '0']`。而认证 cookie 的名字是
+`dsh-auth-` + base64url(sha256(authority))，http 下 authority 取 `url.host`（**含端口**），
+见 `packages/client/connection/src/browser-auth.ts:79-84,117`。RFC 6265 里 cookie 不按端口隔离，
+所以 127.0.0.1 下所有历史端口的 `dsh-auth-*` 会被一并发送；写入带 `Max-Age`，默认
+`cookieMaxAgeDays = 30`，mint 路径上**没有任何删除逻辑**（同文件 :138）。
+
+这是一条能算出来的定时炸弹：单条约 229 B，Node 默认 `--max-http-header-size` 是 16384，
+`16384 / 229 ≈ 71.5` → **约 70 次启动后必然失败**。失败落在启动第二步：第一步
+`authenticateWebHost` 走 undici（不带 jar）永远拿到 303，第二步 `connectDesktopWelcome` 走
+Electron `net.fetch`（带 jar）把 71 条全带上 → 服务端 431 → 被 `if (!response.ok)` 归因成
+`desktop welcome: Web authentication failed`。重装无效（cookie 存在 Application Support 下），
+与第三方插件无关，rc.2 → rc.5 认证路径源码未变。
+
+同一根因的三份独立报告（跨 Windows / macOS，跨 rc.2 / rc.3 / rc.5）：
+
+| discussion | 侧重 | 给出的用户侧规避 |
+|---|---|---|
+| [#11366](https://github.com/deepseek-ai/deepseek-harness/discussions/11366) | 首发：71 条 / 16,188 B 现场 + 4 行客户端清理补丁的前后对照 | 删 `Cookies` 文件（有数约顶 70 次启动） |
+| [#11410](https://github.com/deepseek-ai/deepseek-harness/discussions/11410) | 把规避落到**配置层**：profile patch 固定 `webserver.port` → authority 恒定 → cookie 由 71 条降为 1 条（已验证） | 固定端口 |
+| [#11650](https://github.com/deepseek-ai/deepseek-harness/discussions/11650) | 补上代码级根因与阈值公式；另一条规避是把 `connection.cookieMaxAgeDays` 调小（3 天 → 稳定态约 15 条 / 3.4 KB，已验证） | 调小 cookie 寿命 |
+
+**面板就是把这两条规避做成可检查、可回滚的操作**：#11410 动的是 `webserver` 行，#11650 动的是
+`connection` 行——正好是本插件受管的两行。手改 profile 里那几千行 YAML 很容易踩两个坑，而这两个
+坑在本插件里都有编号：
+
+- **浅赋值**：#11650 自己就提醒「patch 对 `config` 是整体替换而不是深合并，所以 `trustedHosts`
+  必须跟着写全」——漏键会落回 schema 默认（P5），把 bundle 层的 `!!js` 表达式抄成字面量则不再跟随（P9）；
+- **字面量端口会夺走 `--port`**：#11410 的规避写的是 `port: 34567` 字面量，代价是启动旗标失效（P8，
+  本机实测：传 `--port 4200` 仍起在钉住的端口）。
+
+所以面板写端口时用的是表达式形式 `ctx.webStartup.port ?? +<你填的数>`：**authority 恒定（cookie 不再
+按端口累积）与 `--port` 优先，两者都要**。
+
+一句边界：这是**诊断与规避层**，不是根治。真正的修法在上游（cookie 用固定名 / mint 时清理 / welcome
+复用第一步已拿到的 cookie 头 / 报错带上状态码）；上游修好后，本面板的价值退化为「检查你 profile 里
+那两行还写不写得对」。
+
+### 端口：不自动改，但可一键应用（固定 authority，并避开代理工具常用端口）
 
 `port` 钉成字面量会让 `--port` 旗标失效（启动层传来的端口压不动它），这是**启动行为**决策。
 所以「修复」永远不动 `webserver` 行；但面板提供了一个**显式**的「应用端口」动作（命令行为
