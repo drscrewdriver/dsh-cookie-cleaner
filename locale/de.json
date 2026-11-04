@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Cookie-Räumer",
-    "description": "Meldet übrig gebliebene dsh-auth-* Einträge im Cookie-Speicher des Desktop-Clients und liefert einen Befehl, der sie nach vollständigem Beenden des Clients räumt."
+    "description": "Meldet übrig gebliebene dsh-auth-* Einträge im Cookie-Speicher des Desktop-Clients, liefert einen Befehl, der sie nach vollständigem Beenden räumt, und zeigt ein Panel zur Prüfung und Korrektur der Profil-Patch-Struktur."
   }
 }

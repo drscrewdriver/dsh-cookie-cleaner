@@ -1,6 +1,6 @@
 {
   "id": "dsh-cookie-cleaner",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "main": "./src/index.js",
   "description": "Cookie 清理器：只读播报桌面客户端 cookie 库里残留的本地登录凭据（dsh-auth-*），并随包分发「客户端完全退出后」可执行的清理命令（独占写锁 + .bak 备份，账号凭据/会话/插件配置不受影响）。",
   "engines": {

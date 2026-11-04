@@ -119,3 +119,126 @@ test('CLI --help 与未知参数', () => {
   assert.equal(bad.status, 1)
   assert.match(bad.stderr, /未知参数/)
 })
+
+// ── patch 子命令（离线只读；写动作全部不属 CLI）──
+
+function fixturePatch(t, text) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-patch-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'cordis.patch.yml')
+  fs.writeFileSync(file, text, 'utf8')
+  return file
+}
+
+const GOOD = `- id: connection
+  name: '@deepseek-ai/dsh-client-connection'
+  config:
+    cookieMaxAgeDays: 30
+    trustedHosts: []
+    maxRequestBodyBytes: 314572800
+`
+
+test('CLI patch check：偏档是 warn（退出 0）并说出具体值与离线局限', (t) => {
+  const file = fixturePatch(t, GOOD)
+  const out = run(['patch', 'check', '--patch-file=' + file])
+  assert.equal(out.status, 0, out.stdout + out.stderr)
+  assert.match(out.stdout, /cookieMaxAgeDays\D+30/)
+  assert.match(out.stdout, /离线|offline/, '离线档必须声明自己看不到运行态')
+})
+
+// 用户口径（2026-11-04）：“配置和给定结构无差异时只说注入正常，别整那有的没的”。
+// 这张底本就是用户给的正确形态：host/port/trustedHosts 都保留 !!js 表达式、cookie 寿命在目标档。
+const WELL_FORMED = `- id: webserver
+  name: '@deepseek-ai/dsh-host-webserver'
+  config:
+    host: !!js ctx.webStartup.host ?? '127.0.0.1'
+    port: !!js ctx.webStartup.port > 0 ? ctx.webStartup.port : 34567
+    compression: gzip
+    compressionLevel: 1
+    compressionThresholdBytes: 1024
+- id: connection
+  name: '@deepseek-ai/dsh-client-connection'
+  config:
+    cookieMaxAgeDays: 1
+    trustedHosts: !!js ctx.webRuntime.trustedHosts
+    maxRequestBodyBytes: 314572800
+`
+
+test('CLI patch check：结构无差异 → 退出 0 且只给一句「注入正常」，不刷逐行档位', (t) => {
+  const file = fixturePatch(t, WELL_FORMED)
+  const out = run(['patch', 'check', '--patch-file=' + file])
+  assert.equal(out.status, 0, out.stdout + out.stderr)
+  assert.match(out.stdout, /注入正常|injected as written/, '肯定结论必须说出来（用户要的就是这个判定）')
+  assert.doesNotMatch(out.stdout, /有偏差|deviates|会失效|will not take effect/, '无差异时不得出现偏差档字样')
+  assert.doesNotMatch(out.stdout, /下一步|next: press/, '没东西可修就不要提示点修复')
+})
+
+test('CLI patch check：name 写错 → 退出 1 并说出「静默跳过」', (t) => {
+  const file = fixturePatch(t, GOOD.replace('dsh-client-connection', 'dsh-client-conection'))
+  const out = run(['patch', '--patch-file=' + file])
+  assert.equal(out.status, 1, '结构会失效必须非 0')
+  assert.match(out.stdout + out.stderr, /静默|silently/i)
+})
+
+test('CLI patch check：模板根 `[]` 后追分块行 → 判整层失效（P11）', (t) => {
+  const file = fixturePatch(t, '[]\n' + GOOD)
+  const out = run(['patch', 'check', '--patch-file=' + file])
+  assert.equal(out.status, 1)
+  assert.match(out.stdout + out.stderr, /flow|YAML/, '要给可指认的原因')
+})
+
+// 真机踩出来的缺陷（2026-11-04）：`--profile` 敲错名字时，文件读不到被当成「没这一行」，
+// 既编出一条误导的「cookie 会一直存活」异常，又因为 warn→0 的映射把「什么都没读到」洗成假绿。
+// 无据就是无据：skipped + 非 0，并说清是 profile 不存在。
+test('CLI patch check：profile 根本不存在 → 无据 skipped，退出非 0 且不编造偏差', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-ghost-home-'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const out = run(['patch', 'check', '--profile=ghost-cell'], { DSH_HOME: home })
+  assert.equal(out.status, 1, '没真读到内容就不许 0：' + out.stdout + out.stderr)
+  assert.match(out.stdout + out.stderr, /不存在|does not exist|n.existe pas|existiert nicht/, '要说是 profile 不存在')
+  assert.doesNotMatch(out.stdout + out.stderr, /cookieMaxAgeDays/, '无据时不得编出具体偏差')
+})
+
+test('CLI patch check：profile 目录在、只是还没写过 patch → 仍是可修的真偏差（不得过度降级）', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-fresh-home-'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(home, 'profiles', 'fresh-cell'), { recursive: true })
+  const out = run(['patch', 'check', '--profile=fresh-cell'], { DSH_HOME: home })
+  assert.match(out.stdout + out.stderr, /cookieMaxAgeDays/, '缺行要说得出具体值')
+  assert.match(out.stdout + out.stderr, /静默跳过|修复|fix/i, '这条是能动手的偏差，要给下一步')
+})
+
+test('CLI patch plan：输出可直接粘贴的块，目标值已就位', (t) => {
+  const file = fixturePatch(t, GOOD)
+  const out = run(['patch', 'plan', '--patch-file=' + file, '--target-days=2'])
+  assert.equal(out.status, 0, out.stdout + out.stderr)
+  assert.match(out.stdout, /^- id: connection/)
+  assert.match(out.stdout, /cookieMaxAgeDays: 2/)
+  assert.match(out.stdout, /maxRequestBodyBytes: 314572800/, '得把现有键全带上（浅赋值会整块替换）')
+})
+
+test('CLI patch 绝不写盘：跑完 check 后 profile 文件逐字节不变', (t) => {
+  const file = fixturePatch(t, GOOD)
+  const before = fs.readFileSync(file, 'utf8')
+  run(['patch', 'check', '--patch-file=' + file])
+  run(['patch', 'plan', '--patch-file=' + file])
+  assert.equal(fs.readFileSync(file, 'utf8'), before, 'CLI 是只读的，写只属于面板/宿主命令')
+})
+
+test('CLI patch --target-days 非法值直接拒，不拿它去判档', () => {
+  const out = run(['patch', 'check', '--patch-file=' + path.join(os.tmpdir(), 'definitely-missing.yml'), '--target-days=0'])
+  assert.equal(out.status, 1)
+  assert.match(out.stderr, /target-days|≥ 1/)
+})
+
+test('CLI --help 里能看到 patch 子命令', () => {
+  const help = run(['--help'])
+  assert.match(help.stdout, /patch \[check\]|patch check/)
+})
+
+test('CLI --version 报包名@版本，与 package.json 同号（装机别名与包体的对拍）', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+  const out = run(['--version'])
+  assert.equal(out.status, 0, out.stderr)
+  assert.equal(out.stdout.trim(), `${pkg.name}@${pkg.version}`)
+})

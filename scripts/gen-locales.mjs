@@ -14,39 +14,39 @@ const OUT = path.join(ROOT, 'locale')
 const TABLE = {
   zh: {
     title: 'Cookie 清理器',
-    description: '只读播报桌面客户端 cookie 库里残留的 dsh-auth-* 本地登录凭据，并随包分发「客户端完全退出后」可执行的清理命令。',
+    description: '只读播报桌面客户端 cookie 库里残留的 dsh-auth-* 本地登录凭据，随包分发「客户端完全退出后」可执行的清理命令；并提供 profile patch 的结构化体检与一键修复面板。',
   },
   en: {
     title: 'Cookie Cleaner',
-    description: "Reports leftover dsh-auth-* entries in the desktop client's cookie store and ships a command that purges them once the client is fully closed.",
+    description: "Reports leftover dsh-auth-* entries in the desktop client's cookie store, ships a command that purges them once the client is fully closed, and adds a panel that checks and repairs the profile patch structure.",
   },
   ja: {
     title: 'Cookie クリーナー',
-    description: 'デスクトップクライアントの cookie ストアに残った dsh-auth-* を読み取り専用で報告し、クライアントを完全終了後に消去するコマンドを同梱します。',
+    description: 'デスクトップクライアントの cookie ストアに残った dsh-auth-* を読み取り専用で報告し、クライアントを完全終了後に消去するコマンドを同梱。さらに profile patch の構造点検とワンクリック修復のパネルも提供します。',
   },
   ko: {
     title: 'Cookie 정리 도구',
-    description: '데스크톱 클라이언트 cookie 저장소에 남은 dsh-auth-*를 읽기 전용으로 보고하고, 클라이언트를 완전히 종료한 뒤 지우는 명령을 함께 배포합니다.',
+    description: '데스크톱 클라이언트 cookie 저장소에 남은 dsh-auth-*를 읽기 전용으로 보고하고, 클라이언트를 완전히 종료한 뒤 지우는 명령을 함께 배포하며, profile patch 구조 점검·원클릭 복구 패널도 제공합니다.',
   },
   fr: {
     title: 'Nettoyeur de cookies',
-    description: "Signale les entrées dsh-auth-* restantes dans la base de cookies du client desktop et fournit une commande qui les purger une fois le client entièrement fermé.",
+    description: "Signale les entrées dsh-auth-* restantes dans la base de cookies du client desktop, fournit une commande qui les purge une fois le client entièrement fermé et ajoute un panneau qui contrôle et répare la structure du patch de profil.",
   },
   de: {
     title: 'Cookie-Räumer',
-    description: 'Meldet übrig gebliebene dsh-auth-* Einträge im Cookie-Speicher des Desktop-Clients und liefert einen Befehl, der sie nach vollständigem Beenden des Clients räumt.',
+    description: 'Meldet übrig gebliebene dsh-auth-* Einträge im Cookie-Speicher des Desktop-Clients, liefert einen Befehl, der sie nach vollständigem Beenden räumt, und zeigt ein Panel zur Prüfung und Korrektur der Profil-Patch-Struktur.',
   },
   it: {
     title: 'Pulitore di cookie',
-    description: "Segnala le voci dsh-auth-* residue nell'archivio cookie del client desktop e fornisce un comando che le elimina dopo aver chiuso completamente il client.",
+    description: "Segnala le voci dsh-auth-* residue nell'archivio cookie del client desktop, fornisce un comando che le elimina dopo aver chiuso completamente il client e aggiunge un pannello che controlla e corregge la struttura del patch del profilo.",
   },
   ru: {
     title: 'Очистка cookie',
-    description: 'Отчитывается об остатках dsh-auth-* в хранилище cookie десктопного клиента и поставляет команду очистки, применимую только после полного выхода из клиента.',
+    description: 'Отчитывается об остатках dsh-auth-* в хранилище cookie десктопного клиента, поставляет команду очистки после полного выхода из клиента и добавляет панель проверки и исправления структуры патча профиля.',
   },
   es: {
     title: 'Limpiador de cookies',
-    description: 'Informa de las entradas dsh-auth-* residuales en el almacén de cookies del cliente de escritorio y ofrece un comando que las purga tras cerrar del todo el cliente.',
+    description: 'Informa de las entradas dsh-auth-* residuales en el almacén de cookies del cliente de escritorio, ofrece un comando que las purga tras cerrar del todo el cliente y añade un panel que revisa y repara la estructura del patch de perfil.',
   },
 }
 

@@ -7,3 +7,6 @@ coverage/
 
 Cookies.bak-*
 
+# lib/ 不忽略：同族（dsh-session-guard / dsh-perm-gate）均把构建产物入库，
+# V6a 需要仓内 lib 与 tgz 内 lib 对拍；prepack 会重建，不会陈旧。
+package-lock.json

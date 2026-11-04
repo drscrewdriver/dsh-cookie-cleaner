@@ -9,10 +9,19 @@
  * 包是 ESM（宿主装载与 npm bin 都走 ESM），core 只有一份实现，两边共用。
  * 输出语言：--lang > DSH_COOKIE_LANG/DSH_LANG > LC_ALL/LANG > 系统 locale > zh。
  */
+import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import * as core from './core.js'
 import { LANGS, detectLang, normalize, translator } from './i18n.js'
+import { offlineCheck } from './patch-guard.js'
+import { renderPlanBlock } from './patch-model.js'
+import { findOverrideRow, readPatchFile } from './patch-read.js'
+import { patchReportText } from './report.js'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
 
 function usage() {
   return `dsh-cookie-cleaner — 清理 DSH 客户端留在 cookie 库里的本地登录凭据（dsh-auth-*）
@@ -30,13 +39,27 @@ function usage() {
   Linux    ~/.config/@deepseek-ai/dsh-desktop/Network/Cookies
 
 其它：--no-backup 不产出 .bak 副本；--no-vacuum 不做 VACUUM 收缩；
-      --lang <${LANGS.join('|')}> 指定输出语言（缺省跟随系统 locale）
-退出码：0 成功；1 失败（库被占用/无权限/没找到/参数非法）
+      --lang <${LANGS.join('|')}> 指定输出语言（缺省跟随系统 locale）；--version 只报包名与版本
+
+patch 体检（profile 的 cordis.patch.yml 结构，不碰 cookie 库）：
+  dsh-cookie-cleaner patch [check]         离线体检：行在不在、name 对不对、值合不合法、home 层影子
+  dsh-cookie-cleaner patch plan            输出可直接粘贴的覆盖行（目标值已就位）
+  --profile <name>      体检哪个 profile（默认 desktop）
+  --patch-file <路径>  直接指定 patch 文件（优先于 --profile）
+  --target-days <N>     目标 cookie 绝对寿命（≥ 1，默认 1）
+
+退出码：0 成功；1 失败（库被占用/无权限/没找到/参数非法/结构会失效）
 `
 }
 
+/** DSH home（与 patch-guard 同式，不重复一套平台规则）。 */
+function dshHomeOf(env) {
+  const explicit = String(env.DSH_HOME ?? '').trim()
+  return explicit !== '' ? explicit : path.join(os.homedir(), '.dsh')
+}
+
 function parseArgs(argv) {
-  const options = { clean: false, expiredOnly: false, dryRun: false, noBackup: false, noVacuum: false, db: '', lang: '', help: false }
+  const options = { clean: false, expiredOnly: false, dryRun: false, noBackup: false, noVacuum: false, db: '', lang: '', help: false, version: false, command: '', sub: 'check', profile: 'desktop', patchFile: '', targetDays: 1 }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--clean') options.clean = true
@@ -45,9 +68,27 @@ function parseArgs(argv) {
     else if (arg === '--no-backup') options.noBackup = true
     else if (arg === '--no-vacuum') options.noVacuum = true
     else if (arg === '--help' || arg === '-h') options.help = true
+    else if (arg === '--version' || arg === '-v') options.version = true
     else if (arg.startsWith('--db=')) options.db = arg.slice('--db='.length)
     else if (arg === '--lang') options.lang = normalize(argv[++i] ?? '')
     else if (arg.startsWith('--lang=')) options.lang = normalize(arg.slice('--lang='.length))
+    else if (arg === '--profile') options.profile = String(argv[++i] ?? 'desktop')
+    else if (arg.startsWith('--profile=')) options.profile = arg.slice('--profile='.length)
+    else if (arg === '--patch-file') options.patchFile = String(argv[++i] ?? '')
+    else if (arg.startsWith('--patch-file=')) options.patchFile = arg.slice('--patch-file='.length)
+    else if (arg === '--target-days') options.targetDays = Number(argv[++i])
+    else if (arg.startsWith('--target-days=')) options.targetDays = Number(arg.slice('--target-days='.length))
+    else if (!arg.startsWith('-') && options.command === '' && !options.clean) {
+      // 位置参数只认 `patch`（cookie 面保持无子命令的原样，不破坏 0.1.x 用法习惯）
+      if (arg !== 'patch') {
+        process.stderr.write(`未知参数：${arg}\n\n${usage()}`)
+        process.exitCode = 1
+        return undefined
+      }
+      options.command = 'patch'
+      const next = argv[i + 1]
+      if (next === 'check' || next === 'plan') { options.sub = next; i += 1 }
+    }
     else {
       process.stderr.write(`未知参数：${arg}\n\n${usage()}`)
       process.exitCode = 1
@@ -55,6 +96,34 @@ function parseArgs(argv) {
     }
   }
   return options
+}
+
+/** patch 子命令的离线路径：只读文件，**绝不写 profile**（写只属于面板/宿主命令）。 */
+function runPatch(options) {
+  const file = options.patchFile !== ''
+    ? path.resolve(options.patchFile)
+    : path.join(dshHomeOf(process.env), 'profiles', options.profile, 'cordis.patch.yml')
+  if (!Number.isInteger(options.targetDays) || options.targetDays < 1) {
+    process.stderr.write(`--target-days 必须是 ≥ 1 的整数，实际：${String(options.targetDays)}\n`)
+    process.exitCode = 1
+    return
+  }
+  const result = offlineCheck({ profileFile: file, targetDays: options.targetDays })
+  if (options.sub === 'plan') {
+    const parsed = readPatchFile(file).parsed
+    const conn = findOverrideRow(parsed, 'connection')
+    process.stdout.write(renderPlanBlock({
+      rowId: 'connection',
+      inherited: {},
+      current: conn?.config ?? { trustedHosts: [], maxRequestBodyBytes: 314572800 },
+      targetDays: options.targetDays,
+    }) + '\n')
+    process.exitCode = parsed.ok ? 0 : 1
+    return
+  }
+  process.stdout.write(patchReportText(result) + '\n')
+  // 退出码黑名单：只有真读到且结构不是「会失效」的才算成功
+  process.exitCode = result.level === 'fail' || result.level === 'skipped' ? 1 : 0
 }
 
 function main() {
@@ -66,8 +135,23 @@ function main() {
     process.stdout.write(usage())
     return
   }
+  if (options.version) {
+    // 版本号只从包内 package.json 读：装机别名报的号必须与包体同号（V1 闸的运行态对拍）
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(HERE, '..', 'package.json'), 'utf8'))
+      process.stdout.write(`${pkg.name}@${pkg.version}\n`)
+    } catch (e) {
+      process.stderr.write(`读不到 package.json：${String(e && e.message ? e.message : e)}\n`)
+      process.exitCode = 1
+    }
+    return
+  }
   const explicitPath = options.db ? path.resolve(options.db) : ''
   const env = process.env
+  if (options.command === 'patch') {
+    runPatch(options)
+    return
+  }
   try {
     if (!options.clean) {
       const stat = core.statCookies({ explicitPath, env })

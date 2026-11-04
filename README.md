@@ -145,22 +145,79 @@ Node 22 上会有一条 `ExperimentalWarning: SQLite`，可用 `node --no-warnin
 ## 插件面
 
 - 命令 `/cookie-cleaner` `[status|clean]`：**只读**。输出当前统计 + 可直接复制执行的清理命令。
-- 设置 `cookie-cleaner`：`userDataRoot`（覆盖 Electron userData 根）、`expiredOnly`（保守档措辞）、
-  `lang`（钉住输出语言，留空=自动探测）。
-- 没有 client 卡片：这是运维工具，界面交给终端；`locale/<lang>.json` 供宿主市场卡显示。
+- 命令 `/cookie-cleaner patch` `[check|fix|revert|plan]`：体检 / 修复 profile 的 `cordis.patch.yml` 结构。
+- 设置 `dsh-cookie-cleaner`：`userDataRoot`（覆盖 Electron userData 根）、`expiredOnly`（保守档措辞）、
+  `lang`（钉住输出语言，留空=自动探测）、`guardDays`（cookie 寿命目标档，修复按钮写这个值）、
+  `guardMode`（`literal` 只动目标键 / `expression` 同时把 bundle 层的 `!!js` 表达式还原回去）。
+- 浏览器卡片：设置页顶级节「Cookie 清理器」与插件页配置卡各一处，三个按钮（体检 / 修复 / 回滚）。
 
-## 想让残留自动消失（不用手动清）
+## profile patch 体检与修复
 
-宿主内置寿命闸：把 `@deepseek-ai/dsh-client-connection` 的 `cookieMaxAgeDays`（默认 30，最小 1）
-调到 1，Chromium 便会在启动时自行清掉过期行，历史条目不再堆积。代价是最后一次领取的 cookie
-只有 1 天有效期，重启即续期。在 profile 的 `cordis.patch.yml` 追加：
+cookie 会不会堆积，取决于 profile 的 `cordis.patch.yml` 里那两行写得对不对。这个面板把
+「对不对」变成机器判定，并提供一键修复：
 
-```yaml
-- id: connection
-  name: '@deepseek-ai/dsh-client-connection'
-  config:
-    cookieMaxAgeDays: 1
+| 按钮 | 做什么 | 落在哪 |
+|---|---|---|
+| 体检 | 只读：列出每条判定（P1-P12）与档位 | — |
+| 修复 | 走宿主官方 `configEditor` 写 `connection` 行 | 写前经该插件自己的 Config schema 校验，失败自动回滚 |
+| 回滚 | 回到修复前的配置 | 单层快照（修复成功时才留） |
+
+命令行等价物（无 UI 也能做同样的事）：
+
+```powershell
+/cookie-cleaner patch check      # 宿主内命令，能修
+node src/cli.js patch check      # 离线只读（客户端关着也能跑）
+node src/cli.js patch plan       # 输出可直接粘贴的覆盖行
 ```
+
+离线档只看得到文件层：运行态与 bundle 层的对比（P5/P7/P9）需要客户端起来后由面板或
+`/cookie-cleaner patch check` 来查。**CLI 一律不写 profile**——写只有一把刀，就是宿主那个带校验与回滚的。
+
+### 端口：不自动改，但可一键应用（避开代理工具常用端口）
+
+`port` 钉成字面量会让 `--port` 旗标失效（启动层传来的端口压不动它），这是**启动行为**决策。
+所以「修复」永远不动 `webserver` 行；但面板提供了一个**显式**的「应用端口」动作（命令行为
+`/cookie-cleaner patch port <n>`）：
+
+- 写进去的是**表达式**而非字面量：已有表达式就只换末尾回落值（`... ?? 3080` → `... ?? 4300`），
+  没有才用 `ctx.webStartup.port > 0 ? ctx.webStartup.port : <你填的数>`——**`--port` 仍优先**，不自己造 P8。
+- 本插件**不预填也不内置任何默认端口**（`guardPort` 默认 0=未设定）；没填就拒写，端口只能来自你的输入。
+- 写前用 `net.connect` 探针看目标端口在本机是否已被占（占用就不写）；写后“监听到底在哪个端口”
+  也由探针回答，分**热生效 / 下次启动生效 / 无据**三档，不拿配置猜。
+- 快照按行存，一次「回滚」把 cookie 寿命与端口各自退回各自动作前的值。
+
+只想要粘贴块而不点按钮：`patch plan` 或面板里的提示。
+
+### patch 语义速记（判定从这三条来）
+
+1. **浅赋值整块替换**：patch 行按顶层键赋值（`cordis-plugin-include/src/index.ts:120-123`），
+   所以 `config:` 是整块替换。漏写的键落回该插件的 **schema 默认**，不是 bundle 层的值
+   （`webserver.compression` 默认就是 `none`）——这就是覆盖行要写全键的原因。
+2. **name 不匹配 = 整行静默跳过**：只在启动日志留一行 warn，UI 毫无信号。这是
+   「配了但没生效」的头号成因（P2）。
+3. **层顺序**：bundle layers → profile → **home**（`~/.dsh/cordis.patch.yml`）→ `--patch` 覆盖。
+   home 在 profile 之后应用，所以 home 里同 id 行会盖掉 profile 的写（P6）。
+
+另两条踩过的坑：裸 `- id: <不存在的 id>` 会被静默跳过（新增行必须用 `- insert:`，P10）；
+模板根是 flow 形式的 `[]`，在它后面直接追分块行会让**整层** YAML 失效（P11）。
+
+### 档位与噪声口径（什么时候说什么）
+
+- **ok**：覆盖行已被宿主采纳且键集与运行态一致 → 只说一句「补丁设置注入正常」，不逐行刷档位。
+- **warn / fail**：只报**能用数据证明**的偏差。丢键（P5）要求运行态与 bundle 层不同值、且至少一边真有内容
+  才算丢了（`{}` 对缺省这种形式差异不是丢；默认键的缺席也不是）；`--port` 被字面量夺走旗标权（P8）
+  实测复现过，保留（它只说明“现在生效的就是你钉的这个值”，不猜你打算怎么部署）。
+- **表达式被抄成字面量（P9）不在体检里刷屏**：插件无权求值那个表达式，「以后上游变了不跟」是假想后果
+  而不是现状故障，所以它不改档位也不开修复按钮，只在 `patch plan` 的处方里说一句（并告诉你把 `guardMode`
+  切到 `expression` 就能拿到跟随形态的粘贴块）。
+- **skipped**：无据（宿主没有 configEditor、profile 目录都不存在、cookie 库被 Chromium 独占）——
+  中性陈述，绝不冒充异常，也不参与聚合。
+
+### 为什么改完不用重启
+
+HMR 监视 profile 与 home 两级 patch 文件并热 reconcile（`packages/boot/hmr/src/index.ts:215,235`），
+写完几秒内 `effective` 就跟上新值。若正逢热重载，`configEditor` 会拒一次嵌套事务，
+本工具自动退避重试一次，仍失败就提示「稍后再点」而不是谎报成功。
 
 ## 开发与发版
 

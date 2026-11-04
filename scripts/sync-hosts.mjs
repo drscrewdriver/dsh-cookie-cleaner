@@ -17,9 +17,15 @@ const failures = []
 
 const pkgPath = path.join(ROOT, 'package.json')
 const manifestPath = path.join(ROOT, 'dsh.plugin.json')
-const RENDERER = '@deepseek-ai/dsh-client-ui-renderer'
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+
+/**
+ * client 半声明的包必须逐个有 optional peer 背书（包核验器 V3）。
+ * 单一真源就取 `dsh.client.inject`：inject 列表与 peer 清单同源于 hosts.mjs 的 range，
+ * 手写两处必然漂移；也没必要再给没引用的包占 peer（所以 renderer 自动退场）。
+ */
+const clientPeers = [...new Set((pkg.dsh?.client?.inject ?? []).filter((name) => typeof name === 'string' && name !== pkg.name))]
 
 function compare(label, actual, expected) {
   if (actual === expected) return
@@ -32,8 +38,16 @@ compare('package.json#dsh.compatibility.dshReleases', pkg.dsh?.compatibility?.ds
 compare('dsh.plugin.json#engines.dsh', manifest.engines?.dsh, range)
 compare('dsh.plugin.json#version', manifest.version, pkg.version)
 // 兼容性闸门只读 @deepseek-ai/dsh* 前缀的 peer range（不读 engines.dsh），
-// 所以这张卡漏不得：少了它宿主换代时不会拒载，而是装载后运行期报错。
-compare('package.json#peerDependencies[renderer]', pkg.peerDependencies?.[RENDERER], range)
+// 一个都不能漏：少了宿主换代时不会拒载，而是装载后运行期报错。
+for (const name of clientPeers) {
+  compare(`package.json#peerDependencies[${name}]`, pkg.peerDependencies?.[name], range)
+  if (pkg.peerDependenciesMeta?.[name]?.optional !== true) {
+    failures.push(`package.json#peerDependenciesMeta[${name}].optional 应为 true（宿主提供，不是 npm 安装物）`)
+  }
+}
+if (!Object.keys(pkg.peerDependencies ?? {}).some((name) => name.startsWith('@deepseek-ai/dsh'))) {
+  failures.push('package.json#peerDependencies 缺 @deepseek-ai/dsh* 项：兼容性闸门将永远判兼容（假绿）')
+}
 
 if (check) {
   if (failures.length > 0) {
@@ -46,7 +60,13 @@ if (check) {
   // 版本号以 package.json 为源，把同号刷进 dsh.plugin.json（不然改版本必遗漏一处，V1 闸抓不到）
   pkg.engines = { ...pkg.engines, dsh: range }
   pkg.dsh = { ...pkg.dsh, compatibility: { ...pkg.dsh?.compatibility, dshReleases: releases } }
-  pkg.peerDependencies = { ...pkg.peerDependencies, [RENDERER]: range }
+  // peer 表重建：保留非 dsh-scope 的 peer（如 cordis），dsh* 项一律等于 client.inject 集合与同一 range
+  const kept = Object.fromEntries(Object.entries(pkg.peerDependencies ?? {}).filter(([name]) => !name.startsWith('@deepseek-ai/dsh')))
+  for (const name of clientPeers) kept[name] = range
+  pkg.peerDependencies = kept
+  const meta = Object.fromEntries(Object.entries(pkg.peerDependenciesMeta ?? {}).filter(([name]) => !name.startsWith('@deepseek-ai/dsh')))
+  for (const name of clientPeers) meta[name] = { ...meta[name], optional: true }
+  pkg.peerDependenciesMeta = meta
   manifest.engines = { ...manifest.engines, dsh: range }
   if (manifest.version !== pkg.version) {
     manifest.version = pkg.version

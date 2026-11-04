@@ -66,8 +66,17 @@ test('装载身份：manifest.id 必须是包名，@deepseek-ai/dsh* peer 必须
   // 核心定论 §1：宿主只读 @deepseek-ai/dsh | dsh-* 前缀的 peer；一个都没有 = 对所有线恒判兼容
   const dshPeers = Object.keys(pkg.peerDependencies ?? {}).filter((k) => /^@deepseek-ai\/dsh(-|$)/.test(k))
   assert.ok(dshPeers.length > 0, 'peerDependencies 缺少 @deepseek-ai/dsh* 项，闸门将失去拒载能力')
-  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-renderer'], manifest.engines.dsh,
-    'renderer peer 必须与 engines.dsh 逐串相同（hosts.mjs 单源）')
+  // 包核验器 V3：dsh.client.inject 里的每个包都得有同串 optional peer（单一真源=inject）
+  const injected = pkg.dsh?.client?.inject ?? []
+  assert.ok(injected.length > 0, '声明了 client 半就必须列出 inject 包')
+  for (const name of injected) {
+    assert.equal(pkg.peerDependencies[name], manifest.engines.dsh, `${name} 的 peer 必须与 engines.dsh 逐串相同（hosts.mjs 单源）`)
+    assert.equal(pkg.peerDependenciesMeta?.[name]?.optional, true, `${name} 得标 optional（宿主提供，不是 npm 安装物）`)
+  }
+  // 不得给没引用的包占 peer（旧版占过 renderer，它与 client.inject 无对应关系）
+  for (const name of dshPeers) {
+    assert.ok(injected.includes(name), `peer ${name} 不在 dsh.client.inject 里，属于无据声明`)
+  }
 })
 
 test('双清单一致：engines.dsh 三处逐串相等', () => {
@@ -100,7 +109,7 @@ test('宿主半只读：对可写的真库执行只读统计，一条 DELETE/UPD
   assert.ok(statements.every((sql) => !/^\s*(DELETE|UPDATE|INSERT|DROP|VACUUM)/i.test(sql)), `出现写语句：${statements.join(' | ')}`)
 })
 
-test('apply() 只注册命令与设置，命令输出不含写盘动作', (t) => {
+test('apply() 只注册命令与设置，命令输出不含写盘动作', async (t) => {
   // 把定位根指到临时 fixture：单测绝不碰开发者真实 cookie 库。
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apply-fixture-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -124,8 +133,10 @@ test('apply() 只注册命令与设置，命令输出不含写盘动作', (t) =>
   assert.equal(typeof ret.status, 'function')
   assert.equal(typeof ret.clean, 'function', 'clean 仅作为库函数导出，命令面不调用')
 
-  const result = def.handler({ rawInput: 'clean' })
-  assert.equal(result.kind, 'text')
+  // handler 现在是 async（patch 子命令要 await configEditor），并且返回体必须用
+  // 宿主认可的 kind：'success' | 'error'（旧写法 'text' 会在注册边界直接抛）。
+  const result = await def.handler({ rawInput: 'clean' })
+  assert.equal(result.kind, 'success')
   assert.match(result.text, /先完全退出 DSH 客户端|清理命令/, '输出必须把「关闭客户端」的前置条件说在前面')
   assert.match(result.text, /1 条 dsh-auth-\*/, 'fixture 里的条数要如实上报')
   assert.equal(dbSnapshot(file), 1, '跑完命令后库里的行一条不少')

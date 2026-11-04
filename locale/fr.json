@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Nettoyeur de cookies",
-    "description": "Signale les entrées dsh-auth-* restantes dans la base de cookies du client desktop et fournit une commande qui les purger une fois le client entièrement fermé."
+    "description": "Signale les entrées dsh-auth-* restantes dans la base de cookies du client desktop, fournit une commande qui les purge une fois le client entièrement fermé et ajoute un panneau qui contrôle et répare la structure du patch de profil."
   }
 }

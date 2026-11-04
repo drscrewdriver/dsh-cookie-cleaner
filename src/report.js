@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 export * from './core.js'
 import { activeLang, exitInstruction, setLang } from './core.js'
 import { detectLang, translator } from './i18n.js'
+import { patchText } from './locales-patch.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -82,4 +83,108 @@ export function cookieCleanerCommandText(stat, cfg = {}) {
   lines.push(`  ${directRunCommand()} --clean${flag}`)
   lines.push(t('cleanFooter'))
   return lines.join('\n')
+}
+
+const VERDICT_KEY = Object.freeze({ ok: 'vOk', warn: 'vWarn', fail: 'vFail', skipped: 'vSkipped' })
+
+/**
+ * 组装 patch 体检结果（命令面与面板共用同一份渲染，保证「按按钮」与「敲命令」不同案）。
+ * @param {object} result patch-guard check/plan 的返回
+ * @param {{lang?:string, platform?:string, outcome?:object, withPlan?:boolean}} [cfg]
+ */
+export function patchReportText(result, cfg = {}) {
+  if (cfg.lang) setLang(cfg.lang)
+  const lang = cfg.lang ?? activeLang()
+  const L = (key, params) => patchText('text', key, lang, params)
+  const C = (code, params) => patchText('code', code, lang, params)
+  const lines = []
+
+  if (result.reason === 'no-config-editor') {
+    lines.push(L('title'))
+    lines.push(L('noService'))
+    return lines.join('\n')
+  }
+
+  // 无据档单独渲染：不能把「profile 不存在」混进「有偏差」的叙事里（也不给 nextFix 这种误导下一步）。
+  if (result.reason === 'missing-profile') {
+    lines.push(`${L('title')} — ${L('vSkipped')}`)
+    if (result.documentPath) lines.push(result.documentPath)
+    lines.push(L('missingProfile'))
+    return lines.join('\n')
+  }
+
+  lines.push(`${L('title')} — ${L(VERDICT_KEY[result.level] ?? 'vSkipped')}`)
+  if (result.documentPath) lines.push(result.documentPath)
+  if (result.offline === true) lines.push(L('offlineNote'))
+
+  const rows = result.rows ?? []
+  if (result.level === 'ok') {
+    // 结构无差异：一句话给肯定结论，不逐行刷「结构健康」（真机口径：用户要的是「注入正常」这个判定）。
+    lines.push(`\u2713 ${L('injectOk')}`)
+  }
+  else {
+    for (const row of rows) {
+      const label = row.rowId === 'connection' ? 'rowConnection' : 'rowWebserver'
+      lines.push(`\u25aa ${L(label)}: ${L(VERDICT_KEY[row.level] ?? 'vSkipped')}`)
+      for (const finding of row.findings ?? []) lines.push(`   \u00b7 ${C(finding.code, finding.params)}`)
+    }
+  }
+
+  if (result.blocks !== undefined && result.blocks.length > 0) {
+    for (const block of result.blocks) {
+      lines.push('')
+      lines.push(L('planFor', { file: result.documentPath ?? 'cordis.patch.yml' }))
+      lines.push(block.block)
+      // 表达式被抄成字面量不在体检里刷屏，但处方里必须说清：哪些键原本会跟随上游、怎么拿回跟随形态。
+      if ((block.exprFrozen ?? []).length > 0) {
+        lines.push('')
+        lines.push(C('P9', { rowId: block.rowId, keys: block.exprFrozen }))
+        lines.push(L('exprFrozenHint'))
+      }
+    }
+  }
+
+  if ((result.rows ?? []).some((row) => row.rowId === 'webserver' && (row.findings ?? []).length > 0)) {
+    lines.push('')
+    lines.push(L('webserverNote'))
+  }
+  const conn = (result.rows ?? []).find((row) => row.rowId === 'connection')
+  if (conn?.actionable === true && cfg.outcome === undefined) {
+    lines.push('')
+    lines.push(L('nextFix'))
+  }
+  if (cfg.outcome !== undefined) lines.push('', patchOutcomeText(cfg.outcome, { lang }))
+  return lines.join('\n')
+}
+
+/** 修复/回滚结果的固定句式（kind 来自 patch-guard，不在此处二次判定）。 */
+export function patchOutcomeText(outcome, cfg = {}) {
+  const lang = cfg.lang ?? activeLang()
+  const L = (key, params) => patchText('text', key, lang, params)
+  switch (outcome.kind) {
+    case 'fixed': return L('fixed', { changed: (outcome.changed ?? []).join(', ') })
+      + (outcome.retried === true ? ` (${L('vWarn')}: P12)` : '')
+    case 'noop': return L('noop')
+    case 'blocked': return L('blocked', { codes: (outcome.codes ?? []).join(', ') })
+    case 'failed': return L('failed', { message: outcome.message ?? 'unknown' })
+    case 'unverified': return L('failed', { message: `effective=${String(outcome.effective)}` })
+    case 'reverted': return L('reverted', { changed: (outcome.changed ?? []).join(', ') })
+      + ((outcome.rows ?? []).length > 1 ? ` (${(outcome.rows ?? []).join(', ')})` : '')
+      + ((outcome.failed ?? []).length > 0 ? ` (${L('failed', { message: (outcome.failed ?? []).map((f) => f.rowId).join(', ') })})` : '')
+    // 端口：写的是什么表达式、监听现在到底在哪个端口，全部回传真实数据（不拿“点了”当“改好了”）。
+    case 'port-applied': {
+      const lines = [L('portApplied', { expr: outcome.expr ?? String(outcome.port), port: outcome.port })]
+      if (outcome.hotApplied === true) lines.push(L('portHot'))
+      else if (outcome.hotApplied === false) lines.push(L('portRestart'))
+      else lines.push(L('portUnknown'))
+      // 无论哪档，端口一旦生效旧地址就不可用：补一句同步提醒（热生效时尤其关键）。
+      lines.push(L('portSwitchWarn'))
+      return lines.join('\n') + (outcome.retried === true ? ` (${L('vWarn')}: P12)` : '')
+    }
+    case 'port-busy': return L('portBusy', { port: outcome.port })
+    case 'invalid-port': return L('portInvalid', { minimum: outcome.minimum, maximum: outcome.maximum, got: String(outcome.got) })
+    case 'no-snapshot': return L('noSnapshot')
+    case 'no-editor': return L('noService')
+    default: return L('failed', { message: outcome.kind ?? 'unknown' })
+  }
 }

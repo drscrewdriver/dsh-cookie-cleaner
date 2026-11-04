@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "//": [
+    "只覆盖浏览器半：仓库主体是纯 JS 宿主插件，全量 tsc 会把 host 侧也纳入并需要 @deepseek-ai/* 类型包。",
+    "src/locales-patch.js 用 allowJs 读 JSDoc 类型——卡片与宿主半共用同一份 9 语判定表，不允许出现第二份。",
+    "tsdown.config.ts 归构建工具自己解析（它需要 node 的 process），故不纳入。"
+  ],
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/locales-patch.js"]
+}

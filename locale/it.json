@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Pulitore di cookie",
-    "description": "Segnala le voci dsh-auth-* residue nell'archivio cookie del client desktop e fornisce un comando che le elimina dopo aver chiuso completamente il client."
+    "description": "Segnala le voci dsh-auth-* residue nell'archivio cookie del client desktop, fornisce un comando che le elimina dopo aver chiuso completamente il client e aggiunge un pannello che controlla e corregge la struttura del patch del profilo."
   }
 }

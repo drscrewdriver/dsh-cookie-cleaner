@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Cookie Cleaner",
-    "description": "Reports leftover dsh-auth-* entries in the desktop client's cookie store and ships a command that purges them once the client is fully closed."
+    "description": "Reports leftover dsh-auth-* entries in the desktop client's cookie store, ships a command that purges them once the client is fully closed, and adds a panel that checks and repairs the profile patch structure."
   }
 }
