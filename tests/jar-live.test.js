@@ -17,7 +17,7 @@ import {
   HANDLE_STRIDE, HANDLE_TABLE_BASE, PROCESS_ENTRY_SIZE, koffiCandidates, loadKoffi, openApi,
   readProcessEntry, isTargetProcess, handleEntriesFor, normalizeHandlePath, borrowBytes,
   snapshotThroughHandle,
-  prioritizePids,
+  prioritizePids, imageBaseName,
 } from '../src/jar-live.js'
 import { statCookiesLive } from '../src/core.js'
 
@@ -104,6 +104,14 @@ test('normalizeHandlePath：去 DOS 设备前缀并小写', () => {
 test('PID 优先级：父进程排第一，去重且丢掉非法值', () => {
   assert.deepEqual(prioritizePids([5, 7, 5, 0, -1], 7), [7, 5])
   assert.deepEqual(prioritizePids([5, 7], undefined), [5, 7])
+})
+
+// 基名切分必须两种分隔符都认：否则在 Linux 上跑单测时 Win32 路径会被当成一个整体名字。
+test('imageBaseName：反斜杠与正斜杠都能切', () => {
+  assert.equal(imageBaseName('C:\\nodejs\\DeepSeek Harness.exe'), 'DeepSeek Harness.exe')
+  assert.equal(imageBaseName('/usr/lib/dsh-desktop'), 'dsh-desktop')
+  assert.equal(imageBaseName('node.exe'), 'node.exe')
+  assert.equal(imageBaseName(''), '')
 })
 
 /** 假 api：只实现 borrowBytes 用到的入口，行为可控。 */

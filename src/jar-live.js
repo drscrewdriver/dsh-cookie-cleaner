@@ -130,6 +130,14 @@ export function readProcessEntry(entry) {
 }
 
 /**
+ * 取映像基名。**两种分隔符都切**：Win32 给的路带 `\`，而在非 win32 上跑单测时
+ * `path.basename` 不认反斜杠，会把整串当一个名字（真机两侧红过）。
+ */
+export function imageBaseName(exe) {
+  return String(exe ?? '').split(/[\\/]/).filter(Boolean).pop() ?? ''
+}
+
+/**
  * 目标进程判定：**同一镜像名**或**父进程**，不写死品牌名。
  *
  * 真机坑：`PROCESSENTRY32W.szExeFile` 只是**映像基名**（`node.exe`、`DeepSeek Harness.exe`），
@@ -144,14 +152,14 @@ export function isTargetProcess(processEntry, scope) {
   if (scope.ppid !== undefined && pid === scope.ppid) return true
   const name = String(exe ?? '')
   if (name === '') return false
-  return path.basename(name).toLowerCase() === String(scope.selfExe ?? '').toLowerCase()
+  return imageBaseName(name).toLowerCase() === String(scope.selfExe ?? '').toLowerCase()
 }
 
 /** 枚举目标 PID（快照失败返回空数组，绝不抛）。 */
 export function targetPids(api, scope = {}) {
   const {
     selfPid = process.pid, ppid = process.ppid,
-    selfExe = path.basename(process.execPath),
+    selfExe = imageBaseName(process.execPath),
   } = scope
   const found = new Set()
   if (typeof ppid === 'number' && ppid > 0 && ppid !== selfPid) found.add(ppid)
