@@ -7,8 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import {
-  MANAGED_ROWS, aggregateAll, assessRow, isExpression, isValidPort, nextConfigFor, nextPortConfig,
-  portExpressionFor, renderPlanBlock,
+  MANAGED_ROWS, aggregateAll, assessRow, isExpression, nextConfigFor, renderPlanBlock,
 } from '../src/patch-model.js'
 
 const SRC = path.resolve(import.meta.dirname, '..', 'src')
@@ -238,33 +237,13 @@ test('isExpression 只认单键 __jsExpr，别的对象一律按字面量处理'
   assert.equal(isExpression(null), false)
 })
 
-test('端口表达式形式：绝不写裸字面量（那会自己造出 P8），用 `?? +<数字>`', () => {
-  const current = { host: '127.0.0.1', port: 34567, compression: 'gzip' }
-  const { next, changed } = nextPortConfig({ current, inherited: {}, port: 4300 })
-  assert.deepEqual(changed, ['port'], '只动 port 一键')
-  assert.deepEqual(next.port, { __jsExpr: 'ctx.webStartup.port ?? +4300' }, '必须是表达式对象且带 + 转数字')
-  assert.equal(next.compression, 'gzip', '其余键原样保留')
-  assert.notEqual(typeof next.port, 'number', '不得退化成字面量')
-})
-
-test('端口表达式：已有表达式就只换末尾回落值（统一补 +），不拆宿主写法', () => {
-  assert.equal(
-    portExpressionFor({ __jsExpr: 'ctx.webStartup.port > 0 ? ctx.webStartup.port : 34567' }, 4300),
-    'ctx.webStartup.port > 0 ? ctx.webStartup.port : +4300',
-  )
-  assert.equal(portExpressionFor({ __jsExpr: 'ctx.webStartup.port ?? 3080' }, 4300), 'ctx.webStartup.port ?? +4300')
-  // 幂等：尾数已经是 +目标值时原样返回（不得把自己模板化，否则第二次白写）
-  assert.equal(portExpressionFor({ __jsExpr: 'ctx.webStartup.port ?? +4300' }, 4300), 'ctx.webStartup.port ?? +4300')
-  // 没有可复用的表达式才用规范形式，且本仓不假设默认端口是哪个数
-  assert.equal(portExpressionFor(undefined, 51234), 'ctx.webStartup.port ?? +51234')
-})
-
-test('端口合法档：1-65535 整数，其余一律拒（插件不代用户定默认）', () => {
-  assert.equal(isValidPort(4300), true)
-  assert.equal(isValidPort(0), false, '0 = 未设定，不是合法端口')
-  assert.equal(isValidPort(70000), false)
-  assert.equal(isValidPort(1.5), false)
-  assert.equal(isValidPort('4300'), false, '字符串不当作已解析')
+test('端口写入门面已从内核删除（只剩只读判定 P8）', () => {
+  // 用户裁决 2026-11-05：本插件只改配置里的 cookie 有效期。
+  // 钉「导出不存在」而不是钉行为：行为测试会随实现一起被删，导出面才能拦住“顺手加回来”。
+  const source = fs.readFileSync(path.join(SRC, 'patch-model.js'), 'utf8')
+  for (const name of ['PORT_WRITE', 'isValidPort', 'portExpressionFor', 'nextPortConfig']) {
+    assert.doesNotMatch(source, new RegExp(`export (?:const|function) ${name}\\b`), `${name} 应已删除`)
+  }
 })
 
 // 用户口径（2026-11-04）：“也不固定 34567 吧”。拿机械扫描钉住这句话：

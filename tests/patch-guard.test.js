@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { createPatchGuard } from '../src/patch-guard.js'
-import { patchOutcomeText, patchReportText } from '../src/report.js'
+import { patchReportText } from '../src/report.js'
 
 // 路盘符必须用**本平台**分隔符拼：守卫里用的是 path.join，测试给 POSIX 风格 key
 // 会在 Windows 上对不上（`/h/cordis.patch.yml` ≠ `/h\cordis.patch.yml`），把真代码误判成 bug。
@@ -323,117 +323,8 @@ test('体检 ok 但存在表达式被抄成字面量：不报偏差，plan 仍�
   assert.match(text, /guardMode/, '要同时给“拿回跟随形态”的动作')
 })
 
-// ── 端口动作（面板的「应用端口」）──
-// 三条纪律：只写表达式不写字面量（否则就是把 P8 自己造出来）；占用就不写；
-// 是否热生效由探针回答，不拿配置猜。port 值全部来自参数，守卫不预填。
-const PROFILE_PORT = `- id: webserver
-  name: '@deepseek-ai/dsh-host-webserver'
-  config:
-    host: 127.0.0.1
-    port: 38081
-- id: connection
-  name: '@deepseek-ai/dsh-client-connection'
-  config:
-    cookieMaxAgeDays: 1
-    trustedHosts: []
-    maxRequestBodyBytes: 314572800
-`
-
-/** 端口专用假 editor：webserver 行按给定形态摆，edit 记录被谁调过。 */
-function portEditor(options = {}) {
-  const doc = path.join('/fake', 'profiles', 'portcell', 'cordis.patch.yml')
-  const web = { options: { id: 'webserver', name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: options.webConfig?.port ?? 38081, compression: options.webConfig?.compression ?? 'gzip' } } }
-  const conn = { options: { id: 'connection', name: '@deepseek-ai/dsh-client-connection', config: { cookieMaxAgeDays: 1, trustedHosts: [], maxRequestBodyBytes: 314572800 } } }
-  const fsModule = fakeFs({ [doc]: options.profileText ?? PROFILE_PORT })
-  const calls = []
-  return {
-    doc, fsModule, calls, web, conn,
-    entries: () => [conn, web],
-    configuration: () => ([
-      { entry: conn, inherited: options.inherited ?? {}, override: { cookieMaxAgeDays: 1 } },
-      { entry: web, inherited: options.webInherited ?? {}, override: {} },
-    ]),
-    documentPath: doc,
-    edit: async (target, change) => {
-      calls.push(target.options.id)
-      target.options.config = change(structuredClone(target.options.config))
-    },
-  }
-}
-
-test('applyPort：合法端口写成表达式、其余键原样，并按探针回答是否热生效', async () => {
-  const editor = portEditor()
-  const probes = []
-  // 写前 free → 写后新端口有人听，就是真的热生效了
-  const probe = async (port) => { probes.push(port); return port === 4300 && probes.length > 1 ? 'busy' : 'free' }
-  const guard = createPatchGuard({ getEditor: () => editor, fs: editor.fsModule, homeDir: HOME, probe })
-  const outcome = await guard.applyPort({ port: 4300 })
-  assert.equal(outcome.kind, 'port-applied', JSON.stringify(outcome))
-  assert.deepEqual(editor.calls, ['webserver'], '端口动作只能动 webserver 行')
-  assert.deepEqual(outcome.changed, ['port'])
-  assert.equal(editor.web.options.config.compression, 'gzip', '其余键不得被刷掉')
-  assert.equal(outcome.expr, 'ctx.webStartup.port ?? +4300')
-  assert.equal(outcome.hotApplied, true)
-  // 端口热生效会把旧端口页面踢下线：结果文案必须带同步警告
-  assert.match(patchOutcomeText(outcome, { lang: 'zh' }), /立即生效|失联|同步/, '缺端口切换警告')
-  const snap = JSON.parse(String(editor.fsModule.written.get(path.join(HOME, 'cookie-cleaner', 'patch-snapshot--portcell.json'))))
-  assert.equal(snap.rows.webserver.config.port, 38081, '快照要存住写前的字面量，否则回滚无据')
-  assert.equal(snap.rows.webserver.port, 4300)
-})
-
-test('applyPort：目标端口已被占用 → 不写（edit 零调用）并说清原因', async () => {
-  const editor = portEditor()
-  const guard = createPatchGuard({ getEditor: () => editor, fs: editor.fsModule, homeDir: HOME, probe: async () => 'busy' })
-  const outcome = await guard.applyPort({ port: 4300 })
-  assert.equal(outcome.kind, 'port-busy')
-  assert.deepEqual(editor.calls, [], '占用时必须一次都不写')
-})
-
-test('applyPort：非法/未给端口 → 不写，也不拿默认值当“没填也写”的借口', async () => {
-  for (const bad of [undefined, 0, 70000, 1.5, 'abc']) {
-    const editor = portEditor()
-    const guard = createPatchGuard({ getEditor: () => editor, fs: editor.fsModule, homeDir: HOME, probe: async () => 'free' })
-    const outcome = await guard.applyPort({ port: bad })
-    assert.equal(outcome.kind, 'invalid-port', `${String(bad)} 必须被拒`)
-    assert.deepEqual(editor.calls, [], `${String(bad)} 不得触发写入`)
-  }
-})
-
-test('applyPort：已有表达式时只换末尾回落数字（保留宿主写法，不写死默认值）', async () => {
-  const editor = portEditor({
-    webConfig: { port: { __jsExpr: 'ctx.webStartup.port ?? 3080' }, compression: 'gzip' },
-    webInherited: { host: { __jsExpr: "ctx.webStartup.host ?? '127.0.0.1'" } },
-  })
-  const guard = createPatchGuard({ getEditor: () => editor, fs: editor.fsModule, homeDir: HOME, probe: async () => 'free' })
-  const outcome = await guard.applyPort({ port: 4321 })
-  assert.equal(outcome.kind, 'port-applied')
-  assert.equal(outcome.expr, 'ctx.webStartup.port ?? +4321', '只换尾数并补 +，访问链不动')
-  // 再点一次同一目标：已在目标值上就是 noop，不得白写一次
-  const again = await guard.applyPort({ port: 4321 })
-  assert.equal(again.kind, 'noop')
-  assert.deepEqual(editor.calls, ['webserver'], '第二次不得再写')
-})
-
-test('快照按行共存：修 cookie + 改端口后一次回滚，两行各自回到前值', async () => {
-  const editor = portEditor()
-  const guard = createPatchGuard({ getEditor: () => editor, fs: editor.fsModule, homeDir: HOME, probe: async () => 'free' })
-  const port = await guard.applyPort({ port: 4300 })
-  assert.equal(port.kind, 'port-applied')
-  const back = await guard.revert()
-  assert.equal(back.kind, 'reverted')
-  assert.deepEqual(back.rows, ['webserver'])
-  assert.equal(editor.web.options.config.port, 38081, '端口要回到写前那个值')
-})
-
-test('体检携带 lastPort 审计：面板重开也该看到上次端口动作', async () => {
-  const editor = portEditor()
-  const guard = createPatchGuard({ getEditor: () => editor, fs: editor.fsModule, homeDir: HOME, probe: async () => 'free' })
-  assert.equal(guard.check({ targetDays: 1 }).lastPort, undefined, '没动过就不要编审计行')
-  await guard.applyPort({ port: 4300 })
-  const seen = guard.check({ targetDays: 1 }).lastPort
-  assert.equal(seen.port, 4300)
-  assert.equal(seen.before, 38081)
-})
+// 端口写入能力（applyPort / PORT_WRITE / 占用探针）已于 2026-11-05 整体删除：
+// 本插件只改配置里的 cookie 有效期。不保留端口行为测试，只在 patch-model.test.js 钉“导出不存在”。
 
 // 真机串台回归（2026-11-04）：快照曾是全局单文件，于是
 // ① 隔离格那次 fix 的「上次修复」出现在了用户真实 profile 的卡片上，

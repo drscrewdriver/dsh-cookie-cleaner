@@ -137,16 +137,7 @@ test('patch check / plan / fix / revert 全部走契约（带 editor 的真路�
   assert.equal(back.kind, 'success')
 })
 
-// 端口命令只验契约（写与探针的细节在 patch-guard 测试里确定性跑）：这里不能拿真网络当断言依据。
-test('patch port <n> 仍是合法 CommandResult（写不写得出由守卫说清）', async (t) => {
-  const editor = fakeEditor(PROFILE)
-  t.after(() => fs.rmSync(editor.dir, { recursive: true, force: true }))
-  const ctx = makeCtx({ editor })
-  plugin.apply(ctx, { ...plugin.DEFAULT_SETTINGS, guardDays: 1 })
-  const result = await invoke(ctx, 'patch port 4300')
-  assert.equal(result.kind, 'success')
-  assert.match(result.text, /port|端口/, '要么说出写了什么表达式，要么说出为何不写')
-})
+// (removed port tests: applyPort no longer part of the command surface)
 
 test('patch 的未知子命令回落 check，绝不抛（用户敲错字不是错误路径）', async (t) => {
   const editor = fakeEditor(PROFILE)
