@@ -64,7 +64,7 @@ npm i -g dsh-cookie-cleaner
 
 ```shell
 # Windows
-%USERPROFILE%\.dsh\profiles\desktop\node_modules\.bin\dsh-cookie-cleaner.cmd
+%USERPROFILE%\\.dsh\profiles\desktop\node_modules\.bin\dsh-cookie-cleaner.cmd
 # macOS / Linux
 ~/.dsh/profiles/desktop/node_modules/.bin/dsh-cookie-cleaner
 ```
