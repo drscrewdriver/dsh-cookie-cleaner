@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased（0.2.1 候选；0.2.0 已发布，下列内容不在 npm 上）
+## 0.2.1 (2026-11-06)
 
 - **端口写入能力整体删除**（用户裁决 2026-11-05）：防 431 真正有效的是 **cookie 寿命注入**，
-  而端口属启动行为决策，不在本工具职责内。删得比上一版更彻底（上一版只藏面板控件）：
+  而端口属启动行为决策，不在本工具职责内。上一版只藏了面板控件，本版删到底：
   ① 卡片去掉输入框/按钮/常驻警告/留痕行；② 命令面去掉 `patch port` 子命令（`patch` 只剩
   `check|fix|revert|plan`，命令描述与 hint 同步）；③ 守卫去掉 `applyPort` 与 `net.connect` 占用探针；
   ④ 内核去掉 `PORT_WRITE` / `isValidPort` / `portExpressionFor` / `nextPortConfig`；
