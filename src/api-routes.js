@@ -1,9 +1,13 @@
 /**
- * dsh-cookie-cleaner — 卡片到宿主的桥路由（四个端点，全部 POST-only）。
+ * dsh-cookie-cleaner — 卡片到宿主的桥路由（三个端点，全部 POST-only）。
  *
  * 为什么走 `/api` 而不是 typert RPC：第三方卡片的宿主侧数据面在 perm-gate/free-search 上
  * 已跑通这一形态（`webServer.register({kind:'exact'})` + fetch POST），且面板只需几个
  * 幂等动作，不值得为它引入 remote 服务面。
+ *
+ * **端口不在这三条里**：面板隐藏了端口控件（真正有效的是 cookie 寿命注入），
+ * 所写的 `/patch/port` 写端点一并撤掉 —— 没人调的写端点只是攻击面；
+ * 端口仍可由命令面 `/cookie-cleaner patch port <n>` 显式改（走 `guard.applyPort`，不经 HTTP）。
  *
  * 路由派生式与 `src/client/routes.ts` **必须逐字符一致**，由 `tests/api-routes.test.js`
  * 用同一段字面量在两份源里双向核对——两半各持一份派生式而测试不钉，是 URL 漂移的老坑。
@@ -12,12 +16,11 @@
 /** 命名空间 = npm 包名（settings ns、卡 id、桥路径三处同串）。 */
 export const NS = 'dsh-cookie-cleaner'
 
-/** 四条路由：体检 / 修复 / 应用端口 / 回滚。 */
+/** 三条路由：体检 / 修复 / 回滚。（端口写入只走命令面，面板不提供控件，所以不开写端点） */
 export function bridgeRoutesFor(ns = NS) {
   return Object.freeze({
     check: `/api/${ns}/patch/check`,
     fix: `/api/${ns}/patch/fix`,
-    port: `/api/${ns}/patch/port`,
     revert: `/api/${ns}/patch/revert`,
   })
 }
@@ -81,8 +84,8 @@ export function cookieBrief(stat) {
 /**
  * 注册路由。
  * @param {unknown} webServer `webServer` 服务实例（只要求有 register）
- * @param {{check:(o:object)=>object, plan:(o:object)=>object, fix:(o:object)=>Promise<object>, applyPort:(o:object)=>Promise<object>, revert:()=>Promise<object>}} guard
- * @param {{lang?:string, targetDays?:number, guardMode?:string, port?:number, cookie?:() => any}} [defaults] 宿主设置里的默认档
+ * @param {{check:(o:object)=>object, plan:(o:object)=>object, fix:(o:object)=>Promise<object>, revert:()=>Promise<object>}} guard
+ * @param {{lang?:string, targetDays?:number, guardMode?:string, cookie?:() => any}} [defaults] 宿主设置里的默认档
  * @returns {Array<() => void>} 注销函数
  */
 export function registerPatchRoutes(webServer, guard, defaults = {}) {
@@ -108,8 +111,6 @@ export function registerPatchRoutes(webServer, guard, defaults = {}) {
             targetDays: Number.isInteger(body?.targetDays) && body.targetDays >= 1 ? body.targetDays : defaults.targetDays,
             guardMode: body?.guardMode === 'expression' ? 'expression' : defaults.guardMode,
             lang: typeof body?.lang === 'string' ? body.lang : defaults.lang,
-            // 端口不预填：body 没给就回退到设置值（可能是 0=未设定），合法/非法的取舍在守卫里做
-            port: Number.isInteger(body?.port) && body.port >= 1 ? body.port : defaults.port,
           }
           const value = await run(options)
           sendJson(res, 200, { ok: true, value })
@@ -123,10 +124,11 @@ export function registerPatchRoutes(webServer, guard, defaults = {}) {
   endpoint(routes.check, (options) => {
     const result = guard.check(options)
     const cookie = cookieBrief(defaults.cookie)
-    return cookie === undefined ? result : { ...result, cookie }
+    // 目标寿命跟结果同屏：面板要说清「修复按钮写的是哪个值」，不让用户去猜设置里那一格
+    const withTarget = { ...result, targetDays: options.targetDays ?? defaults.targetDays }
+    return cookie === undefined ? withTarget : { ...withTarget, cookie }
   })
   endpoint(routes.fix, (options) => guard.fix(options))
-  endpoint(routes.port, (options) => guard.applyPort(options))
   endpoint(routes.revert, () => guard.revert())
   return offs
 }

@@ -182,6 +182,13 @@ export function patchReportText(result, cfg = {}) {
     lines.push(L('webserverNote'))
   }
   const conn = (result.rows ?? []).find((row) => row.rowId === 'connection')
+  // 真正有效的那一项先说明自已是哪个值：面板隐藏了端口控件后，用户得看得到
+  // 「修复」到底写什么。行上没带时退到顶层 targetDays（两侧任一侧有就能说清）。
+  const targetDays = result.targetDays ?? conn?.targetDays
+  if (Number.isInteger(targetDays) && targetDays >= 1) {
+    lines.push('')
+    lines.push(patchText('text', 'targetDaysLine', lang ?? activeLang(), { days: String(targetDays) }))
+  }
   if (conn?.actionable === true && cfg.outcome === undefined) {
     lines.push('')
     lines.push(L('nextFix'))

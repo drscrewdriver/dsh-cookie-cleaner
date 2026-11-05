@@ -62,28 +62,19 @@ test('卡片必须把 finding.params 插进文案（真机看到过 `{current}` 
   assert.match(code, /finding\.params/, '插值逻辑没进 bundle')
 })
 
-// 端口面板契约：输入框不预填具体默认值（用户口径“也不固定 34567 吧”），
-// 且只有用户真的填了合法值才允许点「应用端口」。
-test('端口输入框不预填默认值，且未填时按钮禁用', () => {
+// 用户裁决（2026-11-05）：面板隐藏端口写入——真正有效的是 cookie 寿命注入。
+// 这条钉的是「不再出现」，防止以后顺手把控件加回来（端口仍只走命令面）。
+test('面板不提供端口控件；目标寿命要同屏回显', () => {
   const source = fs.readFileSync(path.join(ROOT, 'src', 'client', 'card.tsx'), 'utf8')
-  // useState 初值必须是空串，不能是任何端口常量
-  assert.match(source, /useState\(''\)/, 'portInput 初值为空串')
-  assert.doesNotMatch(source, /useState\(\d+\)/, '不得用数字初始化端口输入框')
-  // 禁用条件里要同时要求 offline 不成立 + 端口合法 + webserver 行不被硬闸
-  assert.match(source, /const canPort = offline !== true && portValid && web\?\.blocked !== true/, 'canPort 判定缺失')
-  assert.match(source, /button\('port', !canPort\)/, '端口按钮必须以 !canPort 为禁用')
-  // 端口热生效会踢下线旧端口页面：卡片必须常驻警告（不能只在点完那一瞬出现）
-  assert.match(source, /t\('x\.portSwitchWarn'\)/, '缺常驻端口切换警告')
-  const code = fs.readFileSync(path.join(ROOT, 'lib', 'client.js'), 'utf8')
-  assert.match(code, /portSwitchWarn|立即生效|in effect immediately/, '警告词没进 bundle')
-})
-
-test('端口写入只改表达式不写字面量（写进去的必须是 __jsExpr 形态）', () => {
-  // 这条由 patch-model 的 nextPortConfig 保证；此处只测契约串不串：
-  // card 只发 { port }，具体写不写、写什么形态全在守卫，卡片不自己拼表达式。
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'client', 'card.tsx'), 'utf8')
-  assert.match(source, /postJson<ActionView>\(routes\.port, \{ port: Number\(portInput\) \}\)/, '卡片只发 port 一个参数')
+  assert.doesNotMatch(source, /routes\.port/, '端口写端点已从面板移除')
+  assert.doesNotMatch(source, /portInput|canPort|button\('port'/, '端口控件不得回到面板')
+  assert.doesNotMatch(source, /x\.portSwitchWarn/, '面板不再常驻端口切换警告（命令面自己说）')
+  assert.doesNotMatch(source, /x\.lastPort|port\.audit/, '上次端口留痕也不占面板版面')
+  assert.match(source, /x\.targetDaysLine/, '修复要写的目标寿命必须同屏回显')
   assert.doesNotMatch(source, /__jsExpr/, '卡片不自己拼表达式')
+  const code = fs.readFileSync(path.join(ROOT, 'lib', 'client.js'), 'utf8')
+  assert.doesNotMatch(code, /patch\/port/, 'bundle 里不该再有端口路由')
+  assert.match(code, /targetDaysLine/, '目标寿命句没进 bundle')
 })
 
 // 真机实拍看到的呈现缺陷：修复前根本没有覆盖行（快照里无旧值）时，卡片把“修复前”填成了 `?`，

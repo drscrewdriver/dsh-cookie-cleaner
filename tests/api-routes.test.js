@@ -63,13 +63,13 @@ const GUARD = {
   revert: async () => ({ kind: 'reverted' }),
 }
 
-test('四条路由都注册为 exact，NS 等于 npm 包名', () => {
+test('三条路由都注册为 exact，NS 等于 npm 包名', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
   assert.equal(NS, pkg.name, 'ns 必须与包名同串（卡 id / settings ns / 桥路径三处一致）')
   const server = fakeServer()
   const offs = registerPatchRoutes(server, GUARD, { targetDays: 1, guardMode: 'literal' })
-  assert.equal(offs.length, 4)
-  assert.deepEqual([...server.routes.values()].map((r) => r.kind), ['exact', 'exact', 'exact', 'exact'])
+  assert.equal(offs.length, 3, '面板只剩三条路由（端口写端点已撤）')
+  assert.deepEqual([...server.routes.values()].map((r) => r.kind), ['exact', 'exact', 'exact'])
   assert.deepEqual([...server.routes.keys()], Object.values(bridgeRoutesFor()))
 })
 
@@ -98,17 +98,24 @@ test('POST 正常回数据，body 参数优先于宿主默认档', async () => {
   assert.equal(reverted.json.value.kind, 'reverted')
 })
 
-// 端口不预填：body 给了就用 body 的，没给就回退到设置值（可能是 0=未设定），
-// 合法/非法的取舍统一在守卫里做，路由不自己判。
-test('端口路由：body.port 优先于默认档，不给则透传设置值', async () => {
+// 面板不再写端口。比“路由不存在”更强的一条：即使前端乱发 port，路由也不许把它透传给守卫，
+// 否则面板有机会悄悄改写 webserver 行（端口只能由命令面显式动）。
+test('check/fix 的 options 里没有 port：面板路径不可能改到 webserver 行', async () => {
   const server = fakeServer()
-  registerPatchRoutes(server, GUARD, { targetDays: 1, port: 4399 })
-  const explicit = await call(server, bridgeRoutesFor().port, 'POST', { port: 4300 })
-  assert.equal(explicit.json.value.kind, 'port-applied')
-  assert.equal(explicit.json.value.echo.port, 4300, 'body 显式端口必须赢过设置默认')
-
-  const fallback = await call(server, bridgeRoutesFor().port, 'POST', {})
-  assert.equal(fallback.json.value.echo.port, 4399, 'body 不给时回落宿主设置档')
+  const seen = []
+  const guard = {
+    ...GUARD,
+    check: (o) => { seen.push(o); return { level: 'ok', rows: [] } },
+    fix: async (o) => { seen.push(o); return { kind: 'noop' } },
+  }
+  registerPatchRoutes(server, guard, { targetDays: 7, port: 4399 })
+  await call(server, bridgeRoutesFor().check, 'POST', { port: 4300 })
+  await call(server, bridgeRoutesFor().fix, 'POST', { port: 4300 })
+  assert.equal(seen.length, 2)
+  for (const o of seen) {
+    assert.equal(o.port, undefined, '路由不许透传 port')
+    assert.equal(o.targetDays, 7, '没给 body.targetDays 时回落宿主档')
+  }
 })
 
 test('handler 抛错不外泄成 500，返回结构化 ok:false', async () => {
@@ -133,10 +140,13 @@ test('两半路由同串：从 client 源码抽字面量，与宿主派生函数
   const grabbed = {}
   for (const [, key, url] of client.matchAll(/(check|fix|port|revert):\s*'([^']+)'/g)) grabbed[key] = url
   const host = bridgeRoutesFor()
-  assert.deepEqual(Object.keys(grabbed).sort(), ['check', 'fix', 'port', 'revert'], 'client 侧四条路由都得是可抓取的字面量')
-  for (const name of ['check', 'fix', 'port', 'revert']) {
+  assert.deepEqual(Object.keys(grabbed).sort(), ['check', 'fix', 'revert'], 'client 侧三条路由都得是可抓取的字面量')
+  for (const name of ['check', 'fix', 'revert']) {
     assert.equal(grabbed[name], host[name], `两半的 ${name} 路由不一致：client ${grabbed[name]} ≠ host ${host[name]}`)
   }
+  // 端口写端点两侧都必须不存在：面板不再写端口，没人调的写端点只是攻击面
+  assert.equal(host.port, undefined, '宿主侧不该再开 /patch/port')
+  assert.ok(!client.includes('/patch/port'), 'client 侧不该残留端口路由')
   // 包名也必须出现在两边（ns 漂移会让路由挂到另一个包名下）
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
   assert.ok(client.includes(`/api/${pkg.name}/`), 'client 路由必须挂在包名下')

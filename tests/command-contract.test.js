@@ -170,3 +170,16 @@ test('commands 服务缺席时静默降级（headless 线不得 fatal）', () =>
   assert.doesNotThrow(() => plugin.apply(ctx, plugin.DEFAULT_SETTINGS))
   assert.equal(ctx.commands.length, 0)
 })
+
+// 借句柄的预算边界：只有用户显式点面板「体检」那条才允许扫句柄表。
+// 真机踩过：命令面 `patch check` 也接了阶梯，测试里就去做系统级扫描，整个测试文件超时。
+// 这条静态契约防止以后“为了同构”把扫描重新接回命令面/CLI/启动播报。
+test('句柄扫描只留给面板：命令面/CLI/启动播报走普通只读打开', () => {
+  const src = (name) => fs.readFileSync(path.join(import.meta.dirname, '..', 'src', name), 'utf8')
+  const index = src('index.js')
+  const cli = src('cli.js')
+  assert.match(index, /cookie: \(\) => statCookiesLive\(/, '面板读数应接阶梯')
+  assert.match(index, /cookieBrief\(\(\) => statCookies\(/, '命令面应走普通只读打开')
+  assert.match(index, /stat = statCookies\(\{ userDataRoot/, '启动播报应走普通只读打开')
+  assert.doesNotMatch(cli, /statCookiesLive/, 'CLI 不许做句柄扫描')
+})

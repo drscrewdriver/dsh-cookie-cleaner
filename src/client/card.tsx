@@ -84,10 +84,8 @@ function CookieLine({ cookie, t }: { cookie?: CheckView['cookie']; t: (key: stri
 
 export function PatchCard({ t }: CardProps): React.ReactElement {
   const [state, setState] = React.useState<CheckView | undefined>(undefined)
-  const [busy, setBusy] = React.useState<'' | 'check' | 'fix' | 'revert' | 'port'>('')
+  const [busy, setBusy] = React.useState<'' | 'check' | 'fix' | 'revert'>('')
   const [note, setNote] = React.useState('')
-  // 端口不预填任何默认值：输入框开局为空，用户写了什么就写什么进表达式。
-  const [portInput, setPortInput] = React.useState('')
   const mounted = React.useRef(true)
 
   React.useEffect(() => {
@@ -96,31 +94,13 @@ export function PatchCard({ t }: CardProps): React.ReactElement {
     return () => { mounted.current = false }
   }, [])
 
-  async function run(action: 'check' | 'fix' | 'revert' | 'port'): Promise<void> {
+  async function run(action: 'check' | 'fix' | 'revert'): Promise<void> {
     setBusy(action)
     setNote('')
     try {
       if (action === 'check') {
         const value = await postJson<CheckView>(routes.check, {})
         if (mounted.current) setState(value)
-      }
-      else if (action === 'port') {
-        const value = await postJson<ActionView>(routes.port, { port: Number(portInput) })
-        const fail = (message: string) => render(t('state.failed'), { message })
-        // 结果文案全部取自 `x.*`（与宿主/CLI 同一张表），卡片不留第二份翻译。
-        const outcome = value.kind === 'port-applied'
-          ? `${render(t('x.portApplied'), { port: String(value.port ?? portInput), expr: value.expr ?? '' })}\n`
-            + t(value.hotApplied === true ? 'x.portHot' : value.hotApplied === false ? 'x.portRestart' : 'x.portUnknown')
-            + `\n${t('x.portSwitchWarn')}`
-          : value.kind === 'port-busy' ? render(t('x.portBusy'), { port: String(value.port ?? portInput) })
-            : value.kind === 'invalid-port' ? t('x.portInvalid')
-              : value.kind === 'noop' ? t('fix.noop')
-                : value.kind === 'blocked' ? render(t('fix.blocked'), { codes: value.codes ?? [] })
-                  : fail(value.message ?? value.kind)
-        if (!mounted.current) return
-        setNote(outcome)
-        const after = value.result ?? await postJson<CheckView>(routes.check, {})
-        if (mounted.current) setState(after)
       }
       else {
         const path = action === 'fix' ? routes.fix : routes.revert
@@ -152,21 +132,16 @@ export function PatchCard({ t }: CardProps): React.ReactElement {
   // 曾把这句写成 `rows.some(row => row.rowId==='connection' && row.actionable !== true) !== true`：
   // actionable 为真时 some() 本身就是 false，再取反反而把按钮锁死了（真机看到）。
   const conn = state?.rows?.find((row) => row.rowId === 'connection')
-  const web = state?.rows?.find((row) => row.rowId === 'webserver')
   const canFix = offline !== true && conn?.actionable === true
   const canRevert = offline !== true
-  // 端口：用户真填了合法值、且 webserver 行没有“写了也没用”的硬闸（P2/P6/P10/P11）才能点。
-  const portNumber = Number(portInput)
-  const portValid = /^\d+$/.test(portInput.trim()) && Number.isInteger(portNumber) && portNumber >= 1 && portNumber <= 65535
-  const canPort = offline !== true && portValid && web?.blocked !== true
-  const button = (action: 'check' | 'fix' | 'revert' | 'port', disabled = false) => (
+  const button = (action: 'check' | 'fix' | 'revert', disabled = false) => (
     <button
       type="button"
       disabled={busy !== '' || disabled}
       onClick={() => void run(action)}
       style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--dsw-color-border)', background: 'var(--dsw-color-surface)', color: 'var(--dsw-color-text)', cursor: busy === '' && !disabled ? 'pointer' : 'default' }}
     >
-      {busy === action ? t('state.busy') : t(action === 'port' ? 'action.port' : `action.${action}`)}
+      {busy === action ? t('state.busy') : t(`action.${action}`)}
     </button>
   )
 
@@ -189,23 +164,11 @@ export function PatchCard({ t }: CardProps): React.ReactElement {
       {(state?.rows ?? []).some((row) => row.rowId === 'webserver' && (row.findings ?? []).length > 0)
         ? <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>{t('note.webserver')}</div>
         : null}
-      {/* 端口写入面：放在启动面（webserver）检查下方——它属于启动行为面，与 cookie 寿命（connection）无关。
-          只在“显式输入 + 显式点击”时动 webserver 行；写进去的是表达式 `ctx.webStartup.port ?? +<值>`，`--port` 仍优先。 */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
-        <input
-          type="text"
-          inputMode="numeric"
-          placeholder={t('port.input')}
-          aria-label={t('port.input')}
-          value={portInput}
-          onChange={(event) => setPortInput(event.target.value)}
-          style={{ width: 110, padding: '5px 9px', borderRadius: 6, border: '1px solid var(--dsw-color-border)', background: 'var(--dsw-color-bg, var(--dsw-color-surface))', color: 'var(--dsw-color-text)', fontFamily: 'var(--dsw-font-mono, monospace)' }}
-        />
-        {button('port', !canPort)}
-      </div>
-      <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>{t('port.help')}</div>
-      {/* 常驻警告：端口热生效会把旧端口的当前页面踢下线，不提醒就会把用户锁在门外。 */}
-      <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-warning, var(--dsw-color-muted))', lineHeight: 1.5 }}>{t('x.portSwitchWarn')}</div>
+      {/* 真正有效的那一项：修复按钮写入的目标寿命（宿主设置里的 guardDays），跟结果同屏回显。
+          面板不再提供端口控件：端口属启动行为面，需要时用命令面 `patch port <n>` 显式改。 */}
+      {state?.targetDays !== undefined
+        ? <div style={{ fontSize: '0.9em', color: 'var(--dsw-color-text)' }}>{render(t('x.targetDaysLine'), { days: String(state.targetDays) })}</div>
+        : null}
       {/* cookie 库读数（见 CookieLine：读得到就给实时值，读不到才说 busy） */}
       <CookieLine cookie={state?.cookie} t={t} />
       {/* 审计行：修复前根本没有覆盖行时（快照里无旧值），不能说“修复前 ?”——
@@ -215,11 +178,6 @@ export function PatchCard({ t }: CardProps): React.ReactElement {
           {state.lastFix.beforeDays === undefined || state.lastFix.beforeDays === null
             ? render(t('x.auditLineNew'), { at: state.lastFix.at ?? '?', after: state.lastFix.targetDays ?? '?' })
             : render(t('x.auditLine'), { at: state.lastFix.at ?? '?', before: state.lastFix.beforeDays, after: state.lastFix.targetDays ?? '?' })}
-        </div>
-        : null}
-      {state?.lastPort
-        ? <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>
-          {render(t('port.audit'), { at: state.lastPort.at ?? '?', before: String(state.lastPort.before ?? '?'), port: String(state.lastPort.port ?? '?') })}
         </div>
         : null}
       {state?.checkedAt ? <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>{render(t('lastCheck'), { at: state.checkedAt })}</div> : null}

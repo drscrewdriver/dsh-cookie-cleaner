@@ -12,7 +12,7 @@
  * 在客户端关闭、宿主插件不存在的那个时间窗里执行。
  */
 import z from '@deepseek-ai/schemastery'
-import { cookieCleanerCommandText, cleanCookies, patchOutcomeText, patchReportText, setLang, statCookiesLive } from './report.js'
+import { cookieCleanerCommandText, cleanCookies, patchOutcomeText, patchReportText, setLang, statCookies, statCookiesLive } from './report.js'
 import { LANGS, detectLang, normalize } from './i18n.js'
 import { installSettingsWaist } from './settings-waist.js'
 import { createPatchGuard } from './patch-guard.js'
@@ -29,18 +29,16 @@ export const DEFAULT_SETTINGS = Object.freeze({
   lang: '', // 输出语言（zh/en/ja/ko/fr/de/it/ru/es）；空=跟环境探测，探不到则 zh
   guardDays: 1, // patch 体检的目标cookie 绝对寿命（宿主 schema 要求 ≥1）
   guardMode: 'literal', // 'literal'=只动目标键 | 'expression'=把 bundle 层的 !!js 表达式还原回去
-  // 面板「应用端口」要写的回落端口。**0 = 未设定**：插件不预填任何具体端口值（不把哪个官方默认写进代码），
-  // 没填就不会写。
-  guardPort: 0,
+  // 没有 guardPort 设置项：面板不再写端口（真正有效的是 cookie 寿命注入），
+  // 端口只能由命令面 `patch port <n>` 当场给数，插件不代用户存默认端口。
 })
 
 export const Config = z.object({
   userDataRoot: z.string().default(DEFAULT_SETTINGS.userDataRoot).volatile().description('覆盖 Electron userData 根目录（默认按平台惯例自动定位）'),
   expiredOnly: z.boolean().default(DEFAULT_SETTINGS.expiredOnly).volatile().description('保守档：只统计/只提示已过期的 dsh-auth cookie'),
   lang: z.string().default(DEFAULT_SETTINGS.lang).volatile().description(`输出语言：${LANGS.join('/')}（留空=自动探测）`),
-  guardDays: z.natural().min(1).default(DEFAULT_SETTINGS.guardDays).volatile().description('cookie 体检的目标绝对寿命（天）；修复按钮就写这个值'),
+  guardDays: z.natural().min(1).default(DEFAULT_SETTINGS.guardDays).volatile().description('cookie 体检与修复写入的目标绝对寿命（天）——这是防 431 真正有效的那一项'),
   guardMode: z.string().default(DEFAULT_SETTINGS.guardMode).volatile().description("patch 修复形态：'literal' 只动目标键，'expression' 同时把 bundle 层的 !!js 表达式还原回去"),
-  guardPort: z.natural().max(65535).default(DEFAULT_SETTINGS.guardPort).volatile().description('面板「应用端口」写入的回落端口（1-65535；0=未设定，不预填也不写）。写入形式是表达式，所以 `--port` 仍然优先'),
 })
 
 /** volatile 字段/字段级活引用解引出普通值。 */
@@ -88,7 +86,7 @@ export function apply(ctx, config = {}) {
     setLang(cfg.lang ? lang : detectLang())
     let stat
     try {
-      stat = statCookiesLive({ userDataRoot: cfg.userDataRoot })
+      stat = statCookies({ userDataRoot: cfg.userDataRoot })
     } catch (e) {
       stat = { verdict: 'error', message: e && e.message ? e.message : String(e) }
     }
@@ -118,10 +116,9 @@ export function apply(ctx, config = {}) {
     const offs = registerPatchRoutes(server, guard, {
       targetDays: cfg.guardDays,
       guardMode: cfg.guardMode,
-      // 端口不预填：用户没设就是 0（未设定），面板写时会被拒并提示先填
-      port: cfg.guardPort,
+      // 端口不预填：面板不再提供控件，命令面必须当场给数（没给则由守卫拒写）
       lang: cfg.lang ? normalize(cfg.lang) : undefined,
-      // cookie 库现状随体检一起回：普通只读打开不行时会试借句柄快照，卡片据此区分实时/快照/读不到
+      // cookie 库现状随体检一起回：只有面板这条走阶梯（普通只读打开不行时才试借句柄快照）。
       cookie: () => statCookiesLive({ userDataRoot: current().userDataRoot }),
     })
     if (offs.length === 0) return
@@ -129,18 +126,21 @@ export function apply(ctx, config = {}) {
   })
 
   /**
-   * cookie 实时读数（只读，与面板那条 API 同一个源）。
-   * 字段清单复用 `api-routes.cookieBrief`：两半各自列一遍就是漂移的起点。
-   * 读不到时它返回不带条数的形状，报告侧据此走 busy 档。
+   * cookie 读数（命令面专用）：**只走普通只读打开，不借句柄**。
+   *
+   * 为什么不跟面板共用阶梯：扫一次全机句柄表只在“用户显式点了体检”时才值得，
+   * 而命令面/启动播报会被测试与脚本反复调用，拿它去做系统级扫描会直接卡住
+   * （真机实测：`patch check` 在命令面触发借句柄后整个测试文件超时）。
+   * 而且独立进程的镜像名与桌面端不同，目标进程本来就匹配不上——诚实回 busy。
    */
   function cookieBriefForCommand() {
-    return cookieBrief(() => statCookiesLive({ userDataRoot: current().userDataRoot }))
+    return cookieBrief(() => statCookies({ userDataRoot: current().userDataRoot }))
   }
 
   /** patch 子命令的统一入口（写只发生在这里——用户触发的回调链，不在 HMR 事务内）。 */
   async function runPatch(sub, overrides = {}) {
     const cfg = { ...current(), ...overrides }
-    const opts = { targetDays: cfg.guardDays, guardMode: cfg.guardMode, port: cfg.guardPort }
+    const opts = { targetDays: cfg.guardDays, guardMode: cfg.guardMode, port: overrides.port }
     if (guard === undefined) {
       return { text: patchReportText({ reason: 'no-config-editor', rows: [] }, { lang: undefined }) }
     }
@@ -206,7 +206,7 @@ function registerCookieCleanerCommand(ctx, status, runPatch) {
           if (tokens[0] === 'patch') {
             const sub = ['check', 'fix', 'revert', 'plan', 'port'].includes(tokens[1]) ? tokens[1] : 'check'
             // `patch port 4300`：端口只从参数走，没给就交给守卫拒写（插件不代用户定端口）。
-            const overrides = sub === 'port' && tokens[2] !== undefined ? { guardPort: Number(tokens[2]) } : {}
+            const overrides = sub === 'port' && tokens[2] !== undefined ? { port: Number(tokens[2]) } : {}
             const { text } = await runPatch(sub, overrides)
             return { kind: 'success', text }
           }

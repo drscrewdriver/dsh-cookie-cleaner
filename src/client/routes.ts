@@ -1,8 +1,11 @@
 /**
- * 卡片的数据臂：四条 POST 路由。
+ * 卡片的数据臂：三条 POST 路由。
  *
  * URL 与宿主侧 `src/api-routes.js` 的派生式**必须逐字符一致**——两半各写一份是事实，
  * 但一致性由 `tests/api-routes.test.js` 读两份源码比对钉住（漂移表现为卡片永远 404）。
+ *
+ * 没有 port：面板不再提供端口控件（真正有效的是 cookie 寿命注入），
+ * 端口只能走命令面 `/cookie-cleaner patch port <n>`。
  */
 
 export const NS = 'dsh-cookie-cleaner'
@@ -10,7 +13,6 @@ export const NS = 'dsh-cookie-cleaner'
 export const routes = {
   check: '/api/dsh-cookie-cleaner/patch/check',
   fix: '/api/dsh-cookie-cleaner/patch/fix',
-  port: '/api/dsh-cookie-cleaner/patch/port',
   revert: '/api/dsh-cookie-cleaner/patch/revert',
 } as const
 
@@ -47,6 +49,8 @@ export interface CheckView {
   documentPath?: string
   checkedAt?: string
   offline?: boolean
+  /** 修复按钮要写入的目标寿命（宿主设置里那个值，跟结果同屏回显） */
+  targetDays?: number
   /** 上次成功修复的留痕（面板重开也看得到，不只在这一瞬） */
   lastFix?: { at?: string | null; beforeDays?: number; targetDays?: number }
   /** 上次端口动作的留痕（写前值/目标值） */
@@ -83,10 +87,6 @@ export interface ActionView {
   codes?: string[]
   message?: string
   effective?: number
-  /** 端口动作：写进去的表达式与实际监听到了什么 */
-  port?: number
-  expr?: string
-  hotApplied?: boolean
   result?: CheckView
 }
 

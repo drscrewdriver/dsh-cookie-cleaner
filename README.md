@@ -33,9 +33,10 @@
 （[#11366](https://github.com/deepseek-ai/deepseek-harness/discussions/11366)、
 [#11410](https://github.com/deepseek-ai/deepseek-harness/discussions/11410)、
 [#11650](https://github.com/deepseek-ai/deepseek-harness/discussions/11650)，约 70 次启动后必现 HTTP 431）。
-它们给出的两条用户侧规避（固定 `webserver.port` / 调小 `connection.cookieMaxAgeDays`）就是
-下面「profile patch 体检与修复」面板存在的理由，完整关联见该章的
-[为什么面板要能固定端口](#为什么面板要能固定端口上游三条-discussion-是同一条因果链)。
+它们给出的两条用户侧规避里，**调小 `connection.cookieMaxAgeDays` 是面板「修复」真正写的那一项**；
+固定 `webserver.port` 属于启动行为面，只保留在命令面（面板不提供端口控件）。
+完整关联见该章的
+[为什么要固定端口](#为什么要固定端口上游三条-discussion-是同一条因果链)。
 
 ## 各平台的库位置与退出方式
 
@@ -210,7 +211,7 @@ node src/cli.js patch plan       # 输出可直接粘贴的覆盖行
 离线档只看得到文件层：运行态与 bundle 层的对比（P5/P7/P9）需要客户端起来后由面板或
 `/cookie-cleaner patch check` 来查。**CLI 一律不写 profile**——写只有一把刀，就是宿主那个带校验与回滚的。
 
-### 为什么面板要能固定端口：上游三条 discussion 是同一条因果链
+### 为什么要固定端口：上游三条 discussion 是同一条因果链
 
 桌面宿主每次启动都用**随机端口**：`apps/desktop-host/src/index.ts` 里 host 的启动参数是
 `['--no-open', '--host', '127.0.0.1', '--port', '0']`。而认证 cookie 的名字是
@@ -243,27 +244,35 @@ Electron `net.fetch`（带 jar）把 71 条全带上 → 服务端 431 → 被 `
 - **字面量端口会夺走 `--port`**：#11410 的规避写的是 `port: 34567` 字面量，代价是启动旗标失效（P8，
   本机实测：传 `--port 4200` 仍起在钉住的端口）。
 
-所以面板写端口时用的是表达式形式 `ctx.webStartup.port ?? +<你填的数>`：**authority 恒定（cookie 不再
-按端口累积）与 `--port` 优先，两者都要**。
+所以写端口时用的是表达式形式 `ctx.webStartup.port ?? +<你填的数>`：**authority 恒定（cookie 不再
+按端口累积）与 `--port` 优先，两者都要**。这条只由命令面 `patch port <n>` 提供（见下一节）。
 
 一句边界：这是**诊断与规避层**，不是根治。真正的修法在上游（cookie 用固定名 / mint 时清理 / welcome
 复用第一步已拿到的 cookie 头 / 报错带上状态码）；上游修好后，本面板的价值退化为「检查你 profile 里
 那两行还写不写得对」。
 
-### 端口：不自动改，但可一键应用（固定 authority，并避开代理工具常用端口）
+### 端口：面板不提供控件，只由命令面显式改
 
 `port` 钉成字面量会让 `--port` 旗标失效（启动层传来的端口压不动它），这是**启动行为**决策。
-所以「修复」永远不动 `webserver` 行；但面板提供了一个**显式**的「应用端口」动作（命令行为
-`/cookie-cleaner patch port <n>`）：
+所以「修复」永远不动 `webserver` 行；而面板也不再放端口输入框与按钮（2026-11-05 裁决）：
+**防 431 真正有效的是 cookie 寿命注入**，端口只是另一条可选缓解，把它做成一个大输入框
+反而误导用户去动一个改错就自锁的面。写入能力全部保留在命令面：
+
+```shell
+/cookie-cleaner patch port 4300
+```
 
 - 写进去的是**表达式**而非字面量：已有表达式就只换末尾回落值（`... ?? 3080` → `... ?? 4300`），
-  没有才用 `ctx.webStartup.port > 0 ? ctx.webStartup.port : <你填的数>`——**`--port` 仍优先**，不自己造 P8。
-- 本插件**不预填也不内置任何默认端口**（`guardPort` 默认 0=未设定）；没填就拒写，端口只能来自你的输入。
+  没有才用 `ctx.webStartup.port ?? +4300`——**`--port` 仍优先**，不自己造 P8。
+- 本插件**不预填、不内置、也不代存任何默认端口**（原 `guardPort` 设置项已删）：端口只能来自命令参数。
 - 写前用 `net.connect` 探针看目标端口在本机是否已被占（占用就不写）；写后“监听到底在哪个端口”
   也由探针回答，分**热生效 / 下次启动生效 / 无据**三档，不拿配置猜。
-- 快照按行存，一次「回滚」把 cookie 寿命与端口各自退回各自动作前的值。
+- 改完立即生效，旧端口的当前页面会失联：命令输出里带常驻提醒，server 与 browser 的端口号要同步改。
+- **没有 `/api/.../patch/port` 这个写端点**：面板不调它，没人调的写端点只是攻击面。
 
-只想要粘贴块而不点按钮：`patch plan` 或面板里的提示。
+快照按行存，所以一次「回滚」能把 cookie 寿命（与历史上做过的端口动作）各自退回改前值。
+
+只想要粘贴块而不点按钮：`patch plan`（它会把该写的行列全，包括 `trustedHosts` 这类连带键）。
 
 ### patch 语义速记（判定从这三条来）
 

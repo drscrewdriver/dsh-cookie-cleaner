@@ -154,9 +154,9 @@ function main() {
   }
   try {
     if (!options.clean) {
-      // 与面板/命令面同一个阶梯：普通只读打开不行时会试借句柄快照。
-      // 注意：CLI 的镜像名与桌面端不同，目标进程匹配不上时会诚实地回到 busy。
-      const stat = core.statCookiesLive({ explicitPath, env })
+      // CLI 不借句柄：它是独立进程，镜像名与桌面端不同（目标进程匹配不上），
+      // 而且一个命令行工具不该去扫全机句柄表。要运行期水位就看面板。
+      const stat = core.statCookies({ explicitPath, env })
       process.stdout.write(core.describeStat(stat) + '\n')
       // 占用折算单独一句：describeStat 保持「一句话」契约，但数字不能缺席（与面板同一函数同一句）。
       const live = cookieLiveText(stat)
