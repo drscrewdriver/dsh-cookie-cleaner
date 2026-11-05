@@ -5,9 +5,8 @@
  * 已跑通这一形态（`webServer.register({kind:'exact'})` + fetch POST），且面板只需几个
  * 幂等动作，不值得为它引入 remote 服务面。
  *
- * **端口不在这三条里**：面板隐藏了端口控件（真正有效的是 cookie 寿命注入），
- * 所写的 `/patch/port` 写端点一并撤掉 —— 没人调的写端点只是攻击面；
- * 端口仍可由命令面 `/cookie-cleaner patch port <n>` 显式改（走 `guard.applyPort`，不经 HTTP）。
+ * **没有端口写端点**（用户裁决 2026-11-05）：本插件只改配置里的 cookie 有效期，
+ * 端口属启动行为面，面板与命令面都不再提供写入（面板不调它时留个写端点只是攻击面）。
  *
  * 路由派生式与 `src/client/routes.ts` **必须逐字符一致**，由 `tests/api-routes.test.js`
  * 用同一段字面量在两份源里双向核对——两半各持一份派生式而测试不钉，是 URL 漂移的老坑。

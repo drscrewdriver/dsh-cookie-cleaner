@@ -2,13 +2,21 @@
 
 ## Unreleased（0.2.1 候选；0.2.0 已发布，下列内容不在 npm 上）
 
-- **面板不再提供端口控件**（用户裁决 2026-11-05）：防 431 真正有效的是 **cookie 寿命注入**，
-  端口只是另一条可选缓解，把它做成面板上的大输入框反而误导用户去动一个改错就自锁的面。
-  同时撤掉 `/api/dsh-cookie-cleaner/patch/port` 写端点（没人调的写端点只是攻击面）与
-  `guardPort` 设置项（不再代用户存默认端口）；写入能力全部保留在命令面
-  `/cookie-cleaner patch port <n>`（表达式形式、占用探针、常驻提醒都不变）。
-  面板改为同屏回显 **目标 cookie 绝对寿命**（新词 `targetDaysLine`，9 语，面板与命令面共用），
+- **端口写入能力整体删除**（用户裁决 2026-11-05）：防 431 真正有效的是 **cookie 寿命注入**，
+  而端口属启动行为决策，不在本工具职责内。删得比上一版更彻底（上一版只藏面板控件）：
+  ① 卡片去掉输入框/按钮/常驻警告/留痕行；② 命令面去掉 `patch port` 子命令（`patch` 只剩
+  `check|fix|revert|plan`，命令描述与 hint 同步）；③ 守卫去掉 `applyPort` 与 `net.connect` 占用探针；
+  ④ 内核去掉 `PORT_WRITE` / `isValidPort` / `portExpressionFor` / `nextPortConfig`；
+  ⑤ HTTP 去掉 `/api/.../patch/port` 写端点（没人调的写端点只是攻击面）；⑥ 设置项 `guardPort` 删除；
+  ⑦ 文案去掉 7 个端口结果句（`portApplied`/`portHot`/`portRestart`/`portUnknown`/`portBusy`/
+  `portInvalid`/`portSwitchWarn`，9 语）与 CHROME 里的 `port.*`/`action.port`。
+  **保留**的是只读判定：`webserver.port` 写成字面量仍报 P8（“看到但不替你改”），
+  `webserverNote` 改为说明本插件只改 cookie 有效期（9 语）。
+  面板现在同屏回显 **目标 cookie 绝对寿命**（新词 `targetDaysLine`，面板/命令面共用），
   让用户看得到「修复」到底写哪个值。
+  测试口径：端口行为测试全部删除，改钉「导出不存在」（`patch-model.test.js`）与
+  「面板/命令面/路由都没有 port」（`client-bundle.test.js`、`api-routes.test.js`）——
+  行为测试会随实现一起被删，导出面才能拦住“顺手加回来”。
 - **句柄扫描只留给面板**：命令面 / CLI / 启动播报改回普通只读打开。真机踩过：`patch check`
   也接了阶梯之后，测试里会真的去扫全机句柄表，整个测试文件超时；现由
   `tests/command-contract.test.js` 的静态契约钉住这条边界。

@@ -29,8 +29,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   lang: '', // 输出语言（zh/en/ja/ko/fr/de/it/ru/es）；空=跟环境探测，探不到则 zh
   guardDays: 1, // patch 体检的目标cookie 绝对寿命（宿主 schema 要求 ≥1）
   guardMode: 'literal', // 'literal'=只动目标键 | 'expression'=把 bundle 层的 !!js 表达式还原回去
-  // 没有 guardPort 设置项：面板不再写端口（真正有效的是 cookie 寿命注入），
-  // 端口只能由命令面 `patch port <n>` 当场给数，插件不代用户存默认端口。
+  // 没有 guardPort 设置项，也没有任何端口写入路径（用户裁决 2026-11-05）：
+  // 本插件只改配置里的 cookie 有效期；端口属启动行为面，不在职责内。
 })
 
 export const Config = z.object({
@@ -104,7 +104,7 @@ export function apply(ctx, config = {}) {
   })
 
   // ── patch 体检/修复守卫（只在 configEditor 就绪后存在；老线回调不触发，插件其余面照常）──
-  /** @type {{check:Function, plan:Function, fix:Function, revert:Function, applyPort:Function} | undefined} */
+  /** @type {{check:Function, plan:Function, fix:Function, revert:Function} | undefined} */
   let guard
   ctx.inject(['configEditor', 'webServer'], (sctx) => {
     const editor = typeof sctx.get === 'function' ? sctx.get('configEditor') : undefined
@@ -138,19 +138,14 @@ export function apply(ctx, config = {}) {
   }
 
   /** patch 子命令的统一入口（写只发生在这里——用户触发的回调链，不在 HMR 事务内）。 */
-  async function runPatch(sub, overrides = {}) {
-    const cfg = { ...current(), ...overrides }
-    const opts = { targetDays: cfg.guardDays, guardMode: cfg.guardMode, port: overrides.port }
+  async function runPatch(sub) {
+    const cfg = current()
+    const opts = { targetDays: cfg.guardDays, guardMode: cfg.guardMode }
     if (guard === undefined) {
       return { text: patchReportText({ reason: 'no-config-editor', rows: [] }, { lang: undefined }) }
     }
     if (sub === 'fix') {
       const outcome = await guard.fix(opts)
-      return { text: patchReportText(outcome.result ?? guard.check(opts), { outcome }) }
-    }
-    if (sub === 'port') {
-      // 启动行为面：端口必须用户当场给出，不拿设置里的默认值当“没填也写”的借口。
-      const outcome = await guard.applyPort(opts)
       return { text: patchReportText(outcome.result ?? guard.check(opts), { outcome }) }
     }
     if (sub === 'revert') {
@@ -198,16 +193,15 @@ function registerCookieCleanerCommand(ctx, status, runPatch) {
     if (typeof commands?.register !== 'function') return undefined
     return commands.register({
       name: 'cookie-cleaner',
-      description: '查看 DSH 客户端 cookie 库里的本地登录凭据（dsh-auth-*）并给出清理命令；`patch check|fix|revert|plan|port <n>` 体检/修复 profile 的 cordis.patch.yml。',
-      input: { hint: '[status|clean] | patch [check|fix|revert|plan|port <n>]' },
+      description: '查看 DSH 客户端 cookie 库里的本地登录凭据（dsh-auth-*）并给出清理命令；`patch check|fix|revert|plan` 体检/修复 profile 的 cordis.patch.yml（只改 cookie 有效期）。',
+      input: { hint: '[status|clean] | patch [check|fix|revert|plan]' },
       handler: async (invocation) => {
         const tokens = String(invocation?.rawInput ?? '').trim().split(/\s+/).filter(Boolean)
         try {
           if (tokens[0] === 'patch') {
-            const sub = ['check', 'fix', 'revert', 'plan', 'port'].includes(tokens[1]) ? tokens[1] : 'check'
-            // `patch port 4300`：端口只从参数走，没给就交给守卫拒写（插件不代用户定端口）。
-            const overrides = sub === 'port' && tokens[2] !== undefined ? { port: Number(tokens[2]) } : {}
-            const { text } = await runPatch(sub, overrides)
+            // 没有 `port` 子命令：本插件不写端口（启动行为面不在职责内）。
+            const sub = ['check', 'fix', 'revert', 'plan'].includes(tokens[1]) ? tokens[1] : 'check'
+            const { text } = await runPatch(sub)
             return { kind: 'success', text }
           }
           const mode = tokens[0] === 'clean' ? 'clean' : 'status'

@@ -18,7 +18,7 @@
 
 /** @typedef {'ok'|'warn'|'fail'|'skipped'} Level */
 
-/** 受管行：`writable` = 「修复」按钮可动（只给 cookie 寿命）；端口走另一个显式动作（PORT_WRITE）。 */
+/** 受管行：`writable` = 「修复」按钮可动（**只给 cookie 寿命**）；webserver 行只参与只读判定，本插件不写它。 */
 export const MANAGED_ROWS = Object.freeze({
   connection: Object.freeze({
     id: 'connection',
@@ -37,20 +37,10 @@ export const MANAGED_ROWS = Object.freeze({
 })
 
 /**
- * 端口写入门面（面板的「应用端口」专用，不并进「修复」）。
- * 本仓代码**不携带任何具体端口常量**：目标值只能来自用户输入，回落值只从宿主/用户已有的
- * 表达式里拿（见 portExpressionFor）。
+ * 本插件**不写端口**（用户裁决 2026-11-05）：防 431 真正有效的是 cookie 寿命注入，
+ * 端口只是上游给的另一条可选缓解。原先的 `PORT_WRITE` / `isValidPort` /
+ * `portExpressionFor` / `nextPortConfig` 已全部删除；`webserver` 行仍参与只读判定（P8）。
  */
-export const PORT_WRITE = Object.freeze({
-  rowId: 'webserver',
-  key: 'port',
-  minimum: 1,
-  maximum: 65535,
-})
-
-export function isValidPort(value) {
-  return Number.isInteger(value) && value >= PORT_WRITE.minimum && value <= PORT_WRITE.maximum
-}
 
 /** 档位优先级：聚合时取最高；`skipped` 中性，永不冒充异常。 */
 const LEVEL_RANK = Object.freeze({ fail: 3, warn: 2, ok: 1, skipped: 0 })
@@ -227,37 +217,6 @@ export function aggregateAll(rows) {
   if (usable.length === 0) return { level: 'skipped', rows }
   const level = usable.some((row) => row.level === 'fail') ? 'fail' : usable.some((row) => row.level === 'warn') ? 'warn' : 'ok'
   return { level, rows }
-}
-
-/**
- * 端口表达式的写法：**绝不写裸字面量**（那会夺走 `--port` 旗标权），统一用
- * `ctx.webStartup.port ?? +<数字>`：`??` 只在启动层未传端口时兜底，`+` 把回落值显式转成数字
- * （防运行期 `webStartup.port` 以字符串形态进来时 `z.natural()` 报 expected number）。范围校验在代码里做。
- * 优先复用已有表达式只换末尾数字（保留宿主写法）；本仓不假设默认端口是哪个数。
- */
-export function portExpressionFor(existing, port) {
-  const expr = isExpression(existing) ? String(existing.__jsExpr) : ''
-  const withPort = expr.replace(/\+?\d+\s*$/, `+${String(port)}`)
-  // 末尾有数字且不是目标值 → 只换它
-  if (withPort !== expr) return withPort
-  // 尾数已经是目标值 → 原样返回（幂等：不得把自己模板化）
-  if (/\+?\d+\s*$/.test(expr)) return expr
-  // 没有可复用的表达式 → 用规范形式
-  return `ctx.webStartup.port ?? +${String(port)}`
-}
-
-/**
- * 端口写入意图：只动 `port` 一键（其余键按运行态原样保留，表达式形态也原样保留）。
- * @param {{current:Record<string,unknown>, inherited?:Record<string,unknown>, port:number}} input
- */
-export function nextPortConfig(input) {
-  const current = input.current ?? {}
-  const target = input.port
-  if (!isValidPort(target)) return { next: current, changed: [], invalid: true }
-  const expr = portExpressionFor(isExpression(current[PORT_WRITE.key]) ? current[PORT_WRITE.key] : input.inherited?.[PORT_WRITE.key], target)
-  const next = { ...current, [PORT_WRITE.key]: { __jsExpr: expr } }
-  const already = isExpression(current[PORT_WRITE.key]) && current[PORT_WRITE.key].__jsExpr === expr
-  return { next, changed: already ? [] : [PORT_WRITE.key], expr }
 }
 
 /**

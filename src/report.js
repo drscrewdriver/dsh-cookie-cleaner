@@ -222,18 +222,6 @@ export function patchOutcomeText(outcome, cfg = {}) {
     case 'reverted': return L('reverted', { changed: (outcome.changed ?? []).join(', ') })
       + ((outcome.rows ?? []).length > 1 ? ` (${(outcome.rows ?? []).join(', ')})` : '')
       + ((outcome.failed ?? []).length > 0 ? ` (${L('failed', { message: (outcome.failed ?? []).map((f) => f.rowId).join(', ') })})` : '')
-    // 端口：写的是什么表达式、监听现在到底在哪个端口，全部回传真实数据（不拿“点了”当“改好了”）。
-    case 'port-applied': {
-      const lines = [L('portApplied', { expr: outcome.expr ?? String(outcome.port), port: outcome.port })]
-      if (outcome.hotApplied === true) lines.push(L('portHot'))
-      else if (outcome.hotApplied === false) lines.push(L('portRestart'))
-      else lines.push(L('portUnknown'))
-      // 无论哪档，端口一旦生效旧地址就不可用：补一句同步提醒（热生效时尤其关键）。
-      lines.push(L('portSwitchWarn'))
-      return lines.join('\n') + (outcome.retried === true ? ` (${L('vWarn')}: P12)` : '')
-    }
-    case 'port-busy': return L('portBusy', { port: outcome.port })
-    case 'invalid-port': return L('portInvalid', { minimum: outcome.minimum, maximum: outcome.maximum, got: String(outcome.got) })
     case 'no-snapshot': return L('noSnapshot')
     case 'no-editor': return L('noService')
     default: return L('failed', { message: outcome.kind ?? 'unknown' })

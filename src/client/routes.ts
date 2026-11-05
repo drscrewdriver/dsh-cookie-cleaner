@@ -4,8 +4,7 @@
  * URL 与宿主侧 `src/api-routes.js` 的派生式**必须逐字符一致**——两半各写一份是事实，
  * 但一致性由 `tests/api-routes.test.js` 读两份源码比对钉住（漂移表现为卡片永远 404）。
  *
- * 没有 port：面板不再提供端口控件（真正有效的是 cookie 寿命注入），
- * 端口只能走命令面 `/cookie-cleaner patch port <n>`。
+ * 没有 port：本插件只改 cookie 有效期，端口写入能力已整体删除（面板与命令面都不做）。
  */
 
 export const NS = 'dsh-cookie-cleaner'

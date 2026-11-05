@@ -13,10 +13,9 @@
  * 3. 写后 HMR 会热应用，无需重启；但必须回读 effective 才算「修好了」。
  */
 import fs from 'node:fs'
-import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { MANAGED_ROWS, PORT_WRITE, aggregateAll, assessRow, isValidPort, nextConfigFor, nextPortConfig } from './patch-model.js'
+import { MANAGED_ROWS, aggregateAll, assessRow, nextConfigFor } from './patch-model.js'
 import { findOverrideRow, parsePatchText, readPatchFile } from './patch-read.js'
 
 /** 嵌套事务错误：热重载期间的正常现象，不是配置问题。 */
@@ -27,29 +26,6 @@ const SNAPSHOT_DIR = 'cookie-cleaner'
 export function dshHome(env = process.env, homedir = os.homedir()) {
   const explicit = String(env.DSH_HOME ?? '').trim()
   return explicit !== '' ? explicit : path.join(homedir, '.dsh')
-}
-
-/**
- * 端口占用探针。**只探不占**：用 `connect` 看有人应答就算在用（而不是 bind 一个测试监听
- * 去抢端口）。目的是把“与你代理/科学上网工具常用端口撞车”这句话变成数据而不是猜测。
- * @returns {'busy'|'free'|'unknown'}
- */
-export function probePort(port, host = '127.0.0.1', timeoutMs = 700) {
-  return new Promise((resolve) => {
-    if (!isValidPort(port)) return resolve('unknown')
-    let settled = false
-    const done = (value) => { if (!settled) { settled = true; resolve(value) } }
-    const socket = net.connect({ host, port })
-    const timer = setTimeout(() => { socket.destroy(); done('free') }, timeoutMs)
-    socket.once('connect', () => { clearTimeout(timer); socket.destroy(); done('busy') })
-    // 拒连/网络不可达 = 没人听；其余（权限、沙箱限制等）是无据，不假装知道
-    socket.once('error', (e) => {
-      clearTimeout(timer)
-      const code = String(e && e.code)
-      done(code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'ECONNRESET' ? 'free' : 'unknown')
-    })
-    socket.once('timeout', () => { socket.destroy(); done('free') })
-  })
 }
 
 /**
@@ -125,7 +101,6 @@ export function createPatchGuard(deps) {
     homeDir = dshHome(env),
     wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now = () => Date.now(),
-    probe = (port) => probePort(port),
   } = deps
   /** 可覆盖的目标档位由调用方（命令/路由）每次传入，避免守卫里存状态。 */
   const state = { homeDir }
@@ -183,14 +158,8 @@ export function createPatchGuard(deps) {
       beforeDays: connSnap.config?.cookieMaxAgeDays,
       targetDays: connSnap.targetDays,
     }
-    // 端口同理：面板重开也该看得“上次把端口改成了什么、现在听的是哪个”，不能只在点完那一瞬存在。
-    const portSnap = snap?.rows?.webserver
-    const lastPort = portSnap === undefined ? undefined : {
-      at: portSnap.generatedAt ?? null,
-      before: portSnap.config?.port,
-      port: portSnap.port,
-    }
-    return { ...aggregateAll(rows), documentPath, rows, lastFix, lastPort, checkedAt: new Date(now()).toISOString() }
+    // 端口留痕已随端口写入能力一并删除（本插件不写端口，快照里不再开 webserver 行）。
+    return { ...aggregateAll(rows), documentPath, rows, lastFix, checkedAt: new Date(now()).toISOString() }
   }
 
   /** 只给用户看的粘贴块（webserver 行、以及 CLI 侧无法写时的处方）。 */
@@ -288,62 +257,6 @@ export function createPatchGuard(deps) {
     return { kind: applied ? 'fixed' : 'unverified', changed, before, beforeValue: before?.cookieMaxAgeDays, effective, applied, retried: written.retried === true, snapshotFile: snapFile(), snapshotAt: new Date(now()).toISOString(), result: fresh }
   }
 
-  /**
-   * 应用端口：只改 webserver 行的 `port`，且**永远写成表达式**（带数字字面量就是把 P8 自己造出来）。
-   * 不并进「修复」：端口属启动行为面，必须用户显式点。目标值不存默认：非法/未给就拒。
-   * 写前用探针看目标端口在本机是不是已经被占（与代理工具撞车就是这个场景），占用就不写；
-   * 写后“运行中听到的是哪个端口”也用探针回答，不拿配置猜热生效。
-   */
-  async function applyPort(options = {}) {
-    const port = Number(options.port)
-    if (!isValidPort(port)) return { kind: 'invalid-port', got: options.port, minimum: PORT_WRITE.minimum, maximum: PORT_WRITE.maximum }
-    const result = check(options)
-    const row = result.rows.find((item) => item.rowId === PORT_WRITE.rowId)
-    if (row === undefined) return { kind: 'blocked', reason: 'no-webserver-row', result }
-    if (row.blocked === true) return { kind: 'blocked', codes: row.findings.map((f) => f.code), level: row.level, result }
-    const ce = getEditor()
-    const entry = ce.entries().find((item) => item.options.id === PORT_WRITE.rowId)
-    if (entry === undefined) return { kind: 'blocked', codes: ['P10'], result }
-
-    const configuration = (ce.configuration() ?? []).find((item) => item.entry.options.id === PORT_WRITE.rowId)
-    const { next, changed, expr } = nextPortConfig({ current: entry.options.config ?? {}, inherited: configuration?.inherited ?? {}, port })
-    if (changed.length === 0) return { kind: 'noop', port, expr, result }
-
-    const state = await probe(port)
-    if (state === 'busy') return { kind: 'port-busy', port, expr, probe: state, result }
-
-    const before = plain(entry.options.config ?? {})
-    const beforePort = typeof before?.[PORT_WRITE.key] === 'number' ? before[PORT_WRITE.key] : undefined
-    const written = await attemptEdit(entry, next)
-    if (!written.ok) return { kind: 'failed', message: written.message, nested: written.nested === true, result }
-
-    try {
-      keepSnapshotRow(snapFile(), PORT_WRITE.rowId, { name: PORT_WRITE.name, profile: snapshotKey(ce.documentPath ?? ''), config: before, at: now(), generatedAt: new Date(now()).toISOString(), port }, fsModule)
-    } catch { /* 同上：快照失败不谎报写入失败 */ }
-
-    const after = ce.entries().find((item) => item.options.id === PORT_WRITE.rowId)
-    const live = after?.options?.config?.[PORT_WRITE.key]
-    // 热生效与否看监听，不看配置：新端口有人听 = 已切；只有旧端口有人听 = 下次启动生效。
-    const nowListening = await probe(port)
-    const oldListening = beforePort === undefined ? 'unknown' : await probe(beforePort)
-    const hotApplied = nowListening === 'busy' ? true : oldListening === 'busy' ? false : undefined
-    return {
-      kind: 'port-applied',
-      port,
-      expr,
-      changed,
-      before,
-      beforePort,
-      live,
-      hotApplied,
-      probeState: state,
-      retried: written.retried === true,
-      snapshotFile: snapFile(),
-      snapshotAt: new Date(now()).toISOString(),
-      result: check(options),
-    }
-  }
-
   /** 回到写之前的配置（快照按行存，一次回滚把各行各自回前值；缺失就明说，不猜）。 */
   async function revert() {
     const ce = getEditor()
@@ -378,7 +291,7 @@ export function createPatchGuard(deps) {
     }
   }
 
-  return { check, plan, fix, revert, applyPort, state }
+  return { check, plan, fix, revert, state }
 }
 
 /**
