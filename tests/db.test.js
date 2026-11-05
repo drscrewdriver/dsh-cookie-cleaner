@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
-import { CookieBusyError, buildDeleteStatement, classifyOpenFailure, cleanCookies, describeStat, exitInstruction, resolveCookieDbs, setLang, statCookies } from '../src/core.js'
+import { CookieBusyError, MAX_HEADER_BYTES, buildDeleteStatement, classifyOpenFailure, cleanCookies, describeStat, exitInstruction, headerOccupancy, resolveCookieDbs, setLang, statCookies } from '../src/core.js'
 
 const EPOCH_OFFSET = 11_644_473_600_000_000
 const MICRO = (ms) => ms * 1000 + EPOCH_OFFSET
@@ -88,6 +88,41 @@ test('statCookies 空库判定为 ok，不把「没什么可删」报成异常',
   const stat = statCookies({ explicitPath: file })
   assert.equal(stat.verdict, 'ok')
   assert.match(describeStat(stat), /干净/)
+})
+
+// 占用折算：把条数翻成用户能判的余量。口径必须与上游实测对齐（#11366：71 条 = 16,188 B）。
+test('占用折算口径对齐上游实测：每条 228 B、第 71 条已在临界', () => {
+  const h = headerOccupancy({ count: 71, nameBytes: 71 * 52 })
+  assert.equal(h.bytes, 71 * 228, '52 name + 等号 + 173 value + 分隔两字节 = 228')
+  assert.equal(h.bytes, 16188, '与 #11366 现场数字一致')
+  assert.equal(h.threshold, 71, '16384/228 = 71.86 → 临界在第 71 条')
+  assert.equal(h.maxHeaderBytes, MAX_HEADER_BYTES)
+  assert.equal(h.basis, 'estimated', 'value 列是密文，百分比只能标成估算')
+  assert.ok(h.pct >= 98 && h.pct < 100, `71 条应接近但未顶到 100%，实际 ${String(h.pct)}`)
+})
+
+test('占用折算：0 条不编造百分比，超阈必须 over 且余量不为负', () => {
+  const empty = headerOccupancy({ count: 0, nameBytes: 0 })
+  assert.equal(empty.bytes, 0)
+  assert.equal(empty.pct, 0)
+  assert.equal(empty.over, false)
+  assert.equal(empty.remaining, empty.threshold)
+  const over = headerOccupancy({ count: empty.threshold + 5 })
+  assert.equal(over.over, true, '超过上限必须说过')
+  assert.equal(over.remaining, 0, '余量不得为负')
+  assert.equal(over.pct, 100, '显示封顶 100%，真实值留在 rawPct')
+  assert.ok(over.rawPct > 100)
+})
+
+test('statCookies 带出实时占用与百分比（面板读的就是这个）', (t) => {
+  const rows = Array.from({ length: 3 }, (_, i) => ({ host_key: '127.0.0.1', name: AUTH(`n${String(i)}`), expiresMs: Date.now() + 86_400_000 }))
+  const file = makeCookieDb(tempDb(t), rows)
+  const stat = statCookies({ explicitPath: file })
+  assert.equal(stat.authCookies, 3)
+  assert.ok(stat.header.bytes > 0 && stat.header.bytes < MAX_HEADER_BYTES, JSON.stringify(stat.header))
+  assert.equal(stat.header.remaining, stat.header.threshold - 3)
+  assert.equal(stat.header.over, false)
+  // describeStat 保持「一句话」契约；带 431 与百分比的那句由 cli.js / report.js 出，在 cli.test.js 验。
 })
 
 test('statCookies 找不到库 → skipped（中性，不入聚合异常）', () => {

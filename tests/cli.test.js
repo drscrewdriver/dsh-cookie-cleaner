@@ -45,6 +45,10 @@ test('CLI status：只给现状与下一步，不写盘', (t) => {
   const res = run([], { DSH_USER_DATA: dir })
   assert.equal(res.status, 0, res.stderr)
   assert.match(res.stdout, /2 条 dsh-auth-\*/)
+  // 占用折算与面板同一句：光报条数用户判不出还剩多少余量
+  assert.match(res.stdout, /%/, '必须给出请求头占用百分比')
+  assert.match(res.stdout, /431/, '要说清超过上限就是 431')
+  assert.match(res.stdout, /16384/, '上限得写出来，不让用户猜')
   assert.match(res.stdout, /--clean/)
   assert.equal(fs.existsSync(file), true)
   assert.equal(fs.readdirSync(dir).filter((f) => f.includes('.bak')).length, 0)

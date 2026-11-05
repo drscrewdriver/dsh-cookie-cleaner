@@ -108,6 +108,24 @@ test('档位 ok 时卡片只说「注入正常」，不逐行刷档位', () => {
   assert.match(code, /x\.injectOk|注入正常|injected as written/, '新词没进 bundle')
 })
 
+// 实时读数进设置面：读得到就给百分比与余量，读不到才说 busy，没折算结果时不得编造百分比。
+test('cookie 读数行走实时折算（CookieLine 四档不得混用）', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'client', 'card.tsx'), 'utf8')
+  assert.match(source, /function CookieLine\(/, '缺独立读数行组件')
+  assert.match(source, /t\(cookie\.snapshot === true \? 'x\.cookieLiveSnapshot' : 'x\.cookieLive'\)/, '实时句未取词（且必须按 snapshot 分流）')
+  assert.match(source, /if \(occupancy === undefined\)/, '无折算结果时必须回退到条数而不是编造百分比')
+  assert.match(source, /'x\.cookieBusy'/, '读不到仍要有 busy 档')
+  // 快照与实时不得混说；missing/permission 不得伪装成“被 Chromium 占”
+  assert.match(source, /x\.cookieLiveSnapshot/, '借句柄快照必须单独说非实时')
+  assert.match(source, /x\.cookieMissing/, '没找到库要有自己的文案')
+  assert.match(source, /x\.cookiePermission/, '权限档要有自己的文案')
+  // 颜色必须跟数据走：过半告警、顶到上限危险（上游 #11410 的“过半变红”语义）
+  assert.match(source, /occupancy\.pct >= 50[\s\S]{0,60}warning/, '过半未转告警色')
+  assert.match(source, /occupancy\.over[\s\S]{0,60}danger/, '达上限未转危险色')
+  const code = fs.readFileSync(path.join(ROOT, 'lib', 'client.js'), 'utf8')
+  assert.match(code, /cookieLive|实时读数/, '新句没进 bundle')
+})
+
 test('界面文案不留死键（定义了没人引用 = 漏渲染，插件规范里的静态检查项）', () => {
   const sources = ['card.tsx', 'index.ts'].map((f) => fs.readFileSync(path.join(ROOT, 'src', 'client', f), 'utf8')).join('\n')
   const locales = fs.readFileSync(path.join(ROOT, 'src', 'client', 'locales.ts'), 'utf8')

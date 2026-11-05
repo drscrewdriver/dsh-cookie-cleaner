@@ -28,6 +28,35 @@ export function useDetectedLang(explicit = '') {
 }
 
 /**
+ * cookie 实时读数的一句（面板/命令面/CLI 共用）。
+ * 没折算结果就返回 undefined —— 绝不能拿“没读到”编一个 0%。
+ * 借句柄快照走 `cookieLiveSnapshot`：数字是真的，但不是实时，说成实时就是谎报。
+ * @param {{authCookies?:number,totalCookies?:number,header?:object,snapshot?:boolean}} [stat]
+ * @param {string} [lang]
+ */
+export function cookieLiveText(stat, lang) {
+  if (stat === undefined || stat.header === undefined) return undefined
+  return patchText('text', stat.snapshot === true ? 'cookieLiveSnapshot' : 'cookieLive', lang ?? activeLang(), {
+    count: String(stat.authCookies ?? 0),
+    total: String(stat.totalCookies ?? 0),
+    bytes: String(stat.header.bytes),
+    max: String(stat.header.maxHeaderBytes),
+    pct: String(stat.header.pct),
+    remaining: String(stat.header.remaining),
+  })
+}
+
+/**
+ * 读不到的分档文案。三者不能共用一句：把“路径没找到/权限不够”说成“被 Chromium 占”是误引导。
+ * @param {string} [reason] statCookies 的 reason
+ * @param {string} [lang]
+ */
+export function cookieUnreadableText(reason, lang) {
+  const key = reason === 'missing' ? 'cookieMissing' : reason === 'permission' ? 'cookiePermission' : 'cookieBusy'
+  return patchText('text', key, lang ?? activeLang())
+}
+
+/**
  * 组装 `/cookie-cleaner` 的输出。
  * @param {object} stat statCookies 结果（可能是 busy/permission/skipped 降级形态）
  * @param {{expiredOnly?:boolean, userDataRoot?:string, mode?:'status'|'clean', platform?:string, lang?:string}} [cfg]
@@ -69,13 +98,17 @@ export function cookieCleanerCommandText(stat, cfg = {}) {
   }
 
   lines.push(t('dbLine', { path: stat.path, bytes: stat.bytes, total: stat.totalCookies }))
+  // 占用折算与面板/命令面共用同一个 `cookieLive`（同一张 9 语表），两边不得各自拼一套句式。
+  const liveLine = cookieLiveText(stat, lang)
   if (stat.verdict === 'ok') {
     lines.push(t('ok'))
+    if (liveLine !== undefined) lines.push(liveLine)
     return lines.join('\n')
   }
   lines.push(t('found', { count: stat.authCookies, expired: stat.authExpired, live: stat.authLive }))
   lines.push(t('span', { oldest: stat.oldestExpiry, newest: stat.newestExpiry }))
   lines.push(t('hostLine') + stat.byHost.map((row) => `${row.hostKey}×${row.count}`).join(', '))
+  if (liveLine !== undefined) lines.push(liveLine)
   lines.push(t('note'))
 
   const flag = cfg.expiredOnly === true ? ' --expired-only' : ''
@@ -152,6 +185,17 @@ export function patchReportText(result, cfg = {}) {
   if (conn?.actionable === true && cfg.outcome === undefined) {
     lines.push('')
     lines.push(L('nextFix'))
+  }
+  // cookie 读数与面板同构：同一个折算函数出同一句话。
+  if (result.cookie !== undefined) {
+    const c = result.cookie
+    const readable = c.verdict !== 'skipped' && c.reason !== 'busy' && c.reason !== 'permission'
+    lines.push('')
+    if (!readable) lines.push(cookieUnreadableText(c.reason, lang))
+    else {
+      const live = cookieLiveText(c, lang)
+      lines.push(live ?? `${String(c.authCookies ?? '?')} dsh-auth-* / ${String(c.totalCookies ?? '?')} total`)
+    }
   }
   if (cfg.outcome !== undefined) lines.push('', patchOutcomeText(cfg.outcome, { lang }))
   return lines.join('\n')

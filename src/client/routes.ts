@@ -51,8 +51,30 @@ export interface CheckView {
   lastFix?: { at?: string | null; beforeDays?: number; targetDays?: number }
   /** 上次端口动作的留痕（写前值/目标值） */
   lastPort?: { at?: string | null; before?: unknown; port?: number }
-  /** cookie 库现状：运行期必然 busy，卡片得把它说出来而不是隐掉 */
-  cookie?: { verdict?: string; reason?: string; path?: string; authCookies?: number; totalCookies?: number; bytes?: number }
+  /** cookie 库现状：读得到就给条数与占用折算，读不到才给 reason */
+  cookie?: {
+    verdict?: string
+    reason?: string
+    path?: string
+    authCookies?: number
+    totalCookies?: number
+    bytes?: number
+    /** 读数来源：普通只读打开还是借句柄快照 */
+    source?: string
+    snapshot?: boolean
+    liveUnavailable?: boolean
+    liveReason?: string
+    header?: {
+      bytes: number
+      pct: number
+      rawPct: number
+      maxHeaderBytes: number
+      basis: string
+      threshold: number
+      remaining: number
+      over: boolean
+    }
+  }
 }
 
 export interface ActionView {

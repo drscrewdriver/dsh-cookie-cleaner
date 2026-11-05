@@ -52,10 +52,12 @@ function readJsonBody(req) {
 }
 
 /**
- * cookie 库现状只留卡片需要看的字段（运行期必然 busy，不能谎报条数）。
+ * cookie 库现状只留卡片需要看的字段。
+ * 读得到就带真实条数与请求头占用折算（`header`），并带出它是实时还是借句柄快照；
+ * 读不到才只给 verdict/reason，不能谎报条数。
  * @param {() => any} [stat]
  */
-function cookieBrief(stat) {
+export function cookieBrief(stat) {
   if (typeof stat !== 'function') return undefined
   try {
     const s = stat()
@@ -67,6 +69,11 @@ function cookieBrief(stat) {
       authCookies: s.authCookies,
       totalCookies: s.totalCookies,
       bytes: s.bytes,
+      header: s.header,
+      source: s.source,
+      snapshot: s.snapshot === true,
+      liveUnavailable: s.liveUnavailable === true,
+      liveReason: s.liveReason,
     }
   } catch { return undefined }
 }

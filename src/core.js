@@ -24,6 +24,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { exitFor, translator } from './i18n.js'
+import { snapshotThroughHandle } from './jar-live.js'
 import './locales-dict.js'
 
 /** Cookie 名前缀：宿主 client-connection 生成（`COOKIE_PREFIX + sha256(authority)`）。 */
@@ -34,6 +35,44 @@ export const LOOPBACK_HOST_KEYS = Object.freeze(['127.0.0.1', 'localhost', '[::1
 
 /** Chromium 的 `expires_utc` 是自 1601-01-01 起的微秒数。 */
 const WINDOWS_EPOCH_OFFSET_MICROSECONDS = 11_644_473_600_000_000
+
+/**
+ * 请求头占用折算：把「条数」翻成用户能直接判断的余量。
+ *
+ * 三个数各有出处，不是把上游报告的 228/229 当常数直接乘：
+ * - 上限 `16384` 是 Node `--max-http-header-size` 默认值（头顶过即 431，见上游 #11366 / #11410 / #11650）；
+ * - `name` 列在 Chromium 库里是**明文**，所以 `SUM(LENGTH(name))` 是实测值；每条还多 `'='` 与 `'; '` 共 3 个分隔字节；
+ * - `value` 列存的是 OS 加密后的**密文**（比真正进请求头的明文长），拿它算体积会高估，
+ *   所以明文部分按上游三份报告一致的 173 B/条作估算，结果里带 `basis:'estimated'` 说清这不是精确值。
+ */
+export const MAX_HEADER_BYTES = 16384
+// 每条在 Cookie 头里的格式是 `name=value; ` → '=' 一个字节 + '; ' 两个字节 = 3。
+// 上游三份报告的实测均为 52 + 1 + 173 + 2 = 228 B/条（#11366: 71 条 = 16,188 B），这里按同一口径对齐。
+const HEADER_SEPARATOR_BYTES = 3
+const VALUE_BYTES_ESTIMATE = 173
+const NAME_LENGTH_FALLBACK = 52 // 'dsh-auth-' + base64url(sha256) 实测长度，仅在拿不到 SUM 时兜底
+
+/** @param {{count:number, nameBytes?:number}} input @returns {{bytes:number,pct:number,rawPct:number,maxHeaderBytes:number,basis:string,threshold:number,remaining:number,over:boolean}} */
+export function headerOccupancy({ count = 0, nameBytes }) {
+  const safeCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
+  const names = Number.isFinite(nameBytes) && nameBytes >= 0
+    ? nameBytes
+    : safeCount * NAME_LENGTH_FALLBACK
+  const bytes = names + (HEADER_SEPARATOR_BYTES + VALUE_BYTES_ESTIMATE) * safeCount
+  const rawPct = Math.round((bytes / MAX_HEADER_BYTES) * 1000) / 10
+  const average = safeCount > 0 ? bytes / safeCount : HEADER_SEPARATOR_BYTES + NAME_LENGTH_FALLBACK + VALUE_BYTES_ESTIMATE
+  const threshold = Math.floor(MAX_HEADER_BYTES / Math.max(1, average))
+  return {
+    bytes,
+    pct: Math.min(100, rawPct),
+    rawPct,
+    maxHeaderBytes: MAX_HEADER_BYTES,
+    basis: 'estimated',
+    threshold,
+    remaining: Math.max(0, threshold - safeCount),
+    over: bytes >= MAX_HEADER_BYTES,
+  }
+}
 
 /** 打包的 desktop 应用名（Electron 由 package.json 的 name 派生 userData 目录）。 */
 const PRODUCT_DIR_NAMES = Object.freeze(['@deepseek-ai/dsh-desktop', 'DSH Desktop', 'deepseek-harness'])
@@ -295,6 +334,8 @@ export function statCookies({ userDataRoot = '', explicitPath = '', env = proces
     assertCookieSchema(handle)
     const total = toCount(handle.prepare('SELECT COUNT(*) AS c FROM cookies').get().c)
     const byHost = handle.prepare('SELECT host_key, COUNT(*) AS c FROM cookies GROUP BY host_key ORDER BY c DESC').all()
+    // 名字长度是实测部分（明文），所以单独聚一次给占用折算用
+    const nameAgg = handle.prepare('SELECT COALESCE(SUM(LENGTH(name)), 0) AS n FROM cookies WHERE name LIKE ?').get(`${AUTH_COOKIE_PREFIX}%`)
     const rows = handle.prepare('SELECT name, host_key, expires_utc FROM cookies WHERE name LIKE ? ORDER BY expires_utc DESC')
       .all(`${AUTH_COOKIE_PREFIX}%`)
     const now = BigInt(windowsNowMicroseconds())
@@ -315,6 +356,7 @@ export function statCookies({ userDataRoot = '', explicitPath = '', env = proces
       authExpired: expired,
       authLive: live,
       byHost: byHost.map((row) => ({ hostKey: String(row.host_key), count: toCount(row.c) })),
+      header: headerOccupancy({ count: rows.length, nameBytes: toCount(nameAgg.n) }),
       newestExpiry: rows.length > 0 ? formatChromiumTimestamp(rows[0].expires_utc) : '',
       oldestExpiry: rows.length > 0 ? formatChromiumTimestamp(rows[rows.length - 1].expires_utc) : '',
     }
@@ -403,6 +445,62 @@ export function cleanCookies(options = {}) {
 
 function defaultTimestamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-')
+}
+
+/** 借句柄快照的节流窗口（扫全机句柄表不免费）。 */
+const LIVE_CACHE_MS = 60_000
+const LIVE_MIN_GAP_MS = 5_000
+/** 只缓存“哪个库的快照结果”，不缓存 cookie 内容本身。测试可传入自己的 store 隔离。 */
+const liveCache = { at: Number.NEGATIVE_INFINITY, path: '', outcome: undefined }
+
+/**
+ * 读数阶梯：先普通只读打开；只有因占用而读不到时，才去借目标进程已打开的句柄拿快照。
+ *
+ * 三条约束：
+ * - 快照结果必须带 `source:'borrowed-handle'` 与 `snapshot:true`，界面得说“不是实时”；
+ * - 借不到就原样返回 busy，**绝不把“没读到”洗成 0 条**；
+ * - 扫全机句柄表不免费：同一个库 60 秒内复用上一次结果，失败也至少隔 5 秒再试。
+ * @param {{read?:Function, snapshot?:Function, now?:()=>number, cacheMs?:number, minGapMs?:number, platform?:string, cache?:object}} [options] 余下选项透给读数函数
+ */
+export function statCookiesLive(options = {}) {
+  const {
+    read = statCookies, snapshot = snapshotThroughHandle, now = () => Date.now(),
+    cacheMs = LIVE_CACHE_MS, minGapMs = LIVE_MIN_GAP_MS, platform = process.platform,
+    cache = liveCache,
+    ...stat
+  } = options
+  const plain = read(stat)
+  if (plain.reason !== 'busy' || typeof plain.path !== 'string' || platform !== 'win32') return plain
+  const stamp = now()
+  if (cache !== null && cache.path === plain.path && cache.outcome !== undefined) {
+    const fresh = stamp - cache.at < cacheMs && cache.outcome.snapshot === true
+    const cooling = stamp - cache.at < minGapMs
+    if (fresh || cooling) return { ...plain, ...cache.outcome }
+  }
+  let outcome
+  if (typeof snapshot !== 'function') {
+    outcome = { snapshot: false, liveUnavailable: true, liveReason: 'no-snapshotter' }
+  } else {
+    const borrowed = snapshot({ filePath: plain.path, now })
+    if (borrowed?.ok !== true) {
+      outcome = { snapshot: false, liveUnavailable: true, liveReason: borrowed?.reason ?? 'borrow-failed' }
+    } else {
+      try {
+        const snapStat = read({ ...stat, explicitPath: borrowed.snapshotPath })
+        outcome = snapStat.reason === 'busy' || snapStat.verdict === 'skipped'
+          ? { snapshot: false, liveUnavailable: true, liveReason: 'snapshot-unreadable' }
+          : { ...snapStat, path: plain.path, source: 'borrowed-handle', snapshot: true, snapshotBytes: borrowed.bytes }
+      } catch (e) {
+        outcome = { snapshot: false, liveUnavailable: true, liveReason: `snapshot-error-${String(e && e.code ? e.code : e.message)}` }
+      } finally {
+        try { fs.rmSync(borrowed.snapshotPath, { force: true }) } catch { /* 临时快照残留不影响读数 */ }
+      }
+    }
+  }
+  cache.at = stamp
+  cache.path = plain.path
+  cache.outcome = outcome
+  return { ...plain, ...outcome }
 }
 
 /** 给 CLI / 命令共用的「现在是什么状况」一句话（把处置说全，避免二次求助）。 */

@@ -12,11 +12,11 @@
  * 在客户端关闭、宿主插件不存在的那个时间窗里执行。
  */
 import z from '@deepseek-ai/schemastery'
-import { cookieCleanerCommandText, cleanCookies, patchOutcomeText, patchReportText, setLang, statCookies } from './report.js'
+import { cookieCleanerCommandText, cleanCookies, patchOutcomeText, patchReportText, setLang, statCookiesLive } from './report.js'
 import { LANGS, detectLang, normalize } from './i18n.js'
 import { installSettingsWaist } from './settings-waist.js'
 import { createPatchGuard } from './patch-guard.js'
-import { registerPatchRoutes } from './api-routes.js'
+import { cookieBrief, registerPatchRoutes } from './api-routes.js'
 
 /** Cordis 插件名（与 cordis.patch.yml 的 id 一致）。 */
 export const name = 'cookie-cleaner'
@@ -88,7 +88,7 @@ export function apply(ctx, config = {}) {
     setLang(cfg.lang ? lang : detectLang())
     let stat
     try {
-      stat = statCookies({ userDataRoot: cfg.userDataRoot })
+      stat = statCookiesLive({ userDataRoot: cfg.userDataRoot })
     } catch (e) {
       stat = { verdict: 'error', message: e && e.message ? e.message : String(e) }
     }
@@ -121,12 +121,21 @@ export function apply(ctx, config = {}) {
       // 端口不预填：用户没设就是 0（未设定），面板写时会被拒并提示先填
       port: cfg.guardPort,
       lang: cfg.lang ? normalize(cfg.lang) : undefined,
-      // cookie 库现状随体检一起回：运行期必然 busy，卡片要诚实呈现而不是隐掉
-      cookie: () => statCookies({ userDataRoot: current().userDataRoot }),
+      // cookie 库现状随体检一起回：普通只读打开不行时会试借句柄快照，卡片据此区分实时/快照/读不到
+      cookie: () => statCookiesLive({ userDataRoot: current().userDataRoot }),
     })
     if (offs.length === 0) return
     sctx.effect(() => () => offs.forEach((off) => { try { off() } catch { /* 已回收 */ } }), `${name}: patch routes`)
   })
+
+  /**
+   * cookie 实时读数（只读，与面板那条 API 同一个源）。
+   * 字段清单复用 `api-routes.cookieBrief`：两半各自列一遍就是漂移的起点。
+   * 读不到时它返回不带条数的形状，报告侧据此走 busy 档。
+   */
+  function cookieBriefForCommand() {
+    return cookieBrief(() => statCookiesLive({ userDataRoot: current().userDataRoot }))
+  }
 
   /** patch 子命令的统一入口（写只发生在这里——用户触发的回调链，不在 HMR 事务内）。 */
   async function runPatch(sub, overrides = {}) {
@@ -149,7 +158,8 @@ export function apply(ctx, config = {}) {
       return { text: patchOutcomeText(outcome) }
     }
     if (sub === 'plan') return { text: patchReportText(guard.plan(opts)) }
-    return { text: patchReportText(guard.check(opts)) }
+    // check 与面板同构：同一个 headerOccupancy 折算结果，两边不得各自算一套。
+    return { text: patchReportText({ ...guard.check(opts), cookie: cookieBriefForCommand() }) }
   }
 
   // ── /cookie-cleaner 命令（fail-open：commands 服务缺失只降级不 fatal）──

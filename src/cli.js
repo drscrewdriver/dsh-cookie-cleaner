@@ -19,7 +19,7 @@ import { LANGS, detectLang, normalize, translator } from './i18n.js'
 import { offlineCheck } from './patch-guard.js'
 import { renderPlanBlock } from './patch-model.js'
 import { findOverrideRow, readPatchFile } from './patch-read.js'
-import { patchReportText } from './report.js'
+import { cookieLiveText, patchReportText } from './report.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -154,8 +154,13 @@ function main() {
   }
   try {
     if (!options.clean) {
-      const stat = core.statCookies({ explicitPath, env })
+      // 与面板/命令面同一个阶梯：普通只读打开不行时会试借句柄快照。
+      // 注意：CLI 的镜像名与桌面端不同，目标进程匹配不上时会诚实地回到 busy。
+      const stat = core.statCookiesLive({ explicitPath, env })
       process.stdout.write(core.describeStat(stat) + '\n')
+      // 占用折算单独一句：describeStat 保持「一句话」契约，但数字不能缺席（与面板同一函数同一句）。
+      const live = cookieLiveText(stat)
+      if (live !== undefined) process.stdout.write(live + '\n')
       const exit = core.exitInstruction()
       if (stat.reason === 'busy') {
         process.stdout.write(nextLine('nextCliRerun', { exit }) + '\n')

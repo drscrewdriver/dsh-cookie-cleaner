@@ -53,6 +53,28 @@ profile patch 结构化体检与一键修复（面板 + 命令 + CLI），并修
 - **快照按 profile 隔离**（`patch-snapshot--<profile>.json`）：原先是 `<dsh home>/cookie-cleaner/patch-snapshot.json`
   全局单文件，真机串台过一次——隔离格那次修复的「上次修复」出现在了用户真实 profile 的卡片上，
   更糟的是在另一个 profile 点「回滚」会把**别人的**旧 config 写进来。旧全局快照不再读。
+- **实时读数进设置面**：`statCookies` 结果新增 `header` 折算（`headerOccupancy`）——名字长度用库内实测
+  `SUM(LENGTH(name))`，`value` 列存的是密文不能当体积，所以明文按上游三份报告一致的 173 B/条估算并标
+  `basis:'estimated'`；每条合计 228 B，与 #11366 现场（71 条 = 16,188 B）对齐，临界 = floor(16384/228) = 71 条。
+  面板新增 `CookieLine` 三档（实时值 / 只有条数 / 读不到），过半转告警色、顶到上限转危险色；
+  命令面与 CLI status 共用 `cookieLiveText` 同一句话（9 语）。同时修正一个旧口径：
+  读数路径**先尝试只读打开**，打开成功就给实时值，不再把“运行期必然读不到”当必然（CLI 的
+  `patch` 路径仍不碰 cookie 库，职责分离不变）。
+- **运行期读数：借宿主已打开的句柄（`src/jar-live.js`，仅 Windows）**。普通只读打开被 Chromium 拒
+  （本机实测 `fs.openSync`/`copyFileSync` 均 `EBUSY`，`DatabaseSync(readOnly)`/`?immutable=1` 均
+  `ERR_SQLITE_ERROR`），所以阶梯是“普通打开 → 借句柄快照 → 仍不成才报 busy”。
+  实现完全部靠公开 Win32 语义自己写（不抄任何无 license 仓的代码）：
+  `NtQuerySystemInformation(SystemExtendedHandleInformation=64)` → `CreateToolhelp32Snapshot` 找目标 PID →
+  `OpenProcess(PROCESS_QUERY_INFORMATION)` → `DuplicateHandle(DUPLICATE_SAME_ACCESS)` →
+  `GetFinalPathNameByHandleW` 比路径 → `SetFilePointerEx`+`ReadFile` 分块读 → 落临时库后用同一个
+  `statCookies` 解析。两个实测坑已写进代码注释：`szExeFile` 只是**映像基名**（比目录永远不匹配）；
+  `OpenProcess` 用 `PROCESS_DUP_HANDLE(0x20)` 或 `PROCESS_QUERY_LIMITED_INFORMATION(0x1000)` 会被
+  `ERROR_ACCESS_DENIED` 拒，**0x40 才可用**（0x400|0x1000 互斥混传也不行）。
+  约束：只读；非 win32 不尝试；快照带 `snapshot:true` 开新词 `cookieLiveSnapshot` 明说非实时；
+  每 PID 只 OpenProcess 一次、命中即返、默认预算 2 万次/1200ms（超则 `scan-budget`）；
+  同一库 60s 复用、失败也隔 5s；koffi 只从宿主自带位置解析（`DSH_KOFFI_PATH` 可覆盖），找不到就当能力不存在。
+  同时修正一个误引导：`not-found` 与 `permission` 不再共用“被 Chromium 独占”那一句
+  （新词 `cookieMissing` / `cookiePermission`，9 语）。
 - **浏览器半（首次）**：`src/client/` + tsdown 构建 `lib/client.js`；注册 id = npm 包名
   （`client/modules/src/index.ts:1040` 按 `graphRow(packageName,…)` 建图），插件级 inject 只声明
   `slots`+`locale`（代际互斥服务不进插件级列表），两个席位各自 `safe()` 包裹。
