@@ -71,16 +71,19 @@ test('statCookies 报告条数/过期数/host_key 分布', (t) => {
 })
 
 test('真实量级的 Chromium 时间戳（>2^53 微秒）不得抛 ERR_OUT_OF_RANGE', (t) => {
-  // 13438387633175000 = 2026-11-05 的 chromium 原始微秒值：>2^53（默认按 Number 读会直接抛）
-  // 但 <2^63（int64 可绑定）——两个边界都得踩到才算真验过。
+  // 时间戳按「相对当下 +180 天」现算，不写死日期：写死的那天过去之后，这条会自己翻成「已过期」而误红。
+  // 微秒值必须 >2^53（默认按 Number 读会直接抛）但 <2^63（int64 可绑定）——两个边界都得踩到才算真验过。
+  const futureMs = Date.now() + 180 * 86_400_000
+  const expiresUtcMicro = BigInt(futureMs) * 1000n + BigInt(EPOCH_OFFSET)
+  assert.ok(expiresUtcMicro > 9_007_199_254_740_991n, '必须踩到 >2^53 的读边界')
   const file = makeCookieDb(tempDb(t), [
-    { host_key: '127.0.0.1', name: AUTH('big'), expiresUtcMicro: 13_438_387_633_175_000 },
+    { host_key: '127.0.0.1', name: AUTH('big'), expiresUtcMicro },
   ])
   const stat = statCookies({ explicitPath: file })
   assert.equal(stat.authCookies, 1)
-  assert.equal(stat.authExpired, 0, '13438387633175000 落在 2026-11-05（当下之后），归入未过期')
+  assert.equal(stat.authExpired, 0, `${String(expiresUtcMicro)} 落在 +180 天（当下之后），归入未过期`)
   assert.equal(stat.authLive, 1)
-  assert.equal(stat.newestExpiry, '2026-11-05 21:27 UTC')
+  assert.equal(stat.newestExpiry, new Date(futureMs).toISOString().slice(0, 16).replace('T', ' ') + ' UTC')
 })
 
 test('statCookies 空库判定为 ok，不把「没什么可删」报成异常', (t) => {
