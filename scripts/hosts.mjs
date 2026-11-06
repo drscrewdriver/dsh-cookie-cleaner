@@ -7,7 +7,14 @@
  * 手工改其中一处而漏掉其余 = 假兼容/假拒绝的直接来源。
  */
 
-/** 已验证可装载的宿主线（逐 rc 单列，禁用 range 通配）。 */
+/**
+ * 判定闸门声明面（2026-11-06 起改 range 声明，对齐 dsh-arrowkey-nav a6fb783 迁移）：
+ * `engines.dsh` 两处写点（package.json / dsh.plugin.json）发这一串；
+ * HOSTS 枚举继续供 `dsh.compatibility.dshReleases` 展示与 peer range 下发。
+ */
+export const ENGINES_RANGE = '>=0.2.1 <0.3.0'
+
+/** 已验证可装载的宿主线（逐 rc 单列，供 compatibility 展示与 peer range）。 */
 export const HOSTS = [
   '0.1.0-rc.2',
   '0.1.0-rc.3',

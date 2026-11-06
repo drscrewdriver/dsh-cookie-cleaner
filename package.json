@@ -1,6 +1,6 @@
 {
   "name": "dsh-cookie-cleaner",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Fixes the 'desktop welcome: Web authentication failed' (HTTP 431) launch failure caused by dsh-auth-* cookie pile-up in the desktop client's Chromium cookie store (random port per launch, ~70 entries overflow the 16KB header cap). Reports leftover entries with the estimated request-header occupancy and how much room is left before 431, and ships a standalone command that purges them once the client is fully closed (backup + atomic transaction, credentials/sessions/plugin config untouched); the settings panel audits your profile's cordis.patch.yml and one-click fixes connection.cookieMaxAgeDays (cookie lifetime, revertible). See README for usage.",
   "type": "module",
   "license": "MIT",
@@ -109,7 +109,7 @@
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
-    "dsh": "0.1.0-rc.2 || 0.1.0-rc.3 || 0.1.0-rc.6 || 0.1.0-rc.7 || 0.1.0-rc.8 || 0.1.1-rc.1 || 0.1.1-rc.2 || 0.1.2-rc.1 || 0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5 || 0.2.2-rc.1"
+    "dsh": ">=0.2.1 <0.3.0"
   },
   "keywords": [
     "deepseek-harness",

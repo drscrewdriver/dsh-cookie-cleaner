@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { HOSTS, STATUS, orRange } from './hosts.mjs'
+import { HOSTS, STATUS, orRange, ENGINES_RANGE } from './hosts.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const check = process.argv.includes('--check')
@@ -33,9 +33,9 @@ function compare(label, actual, expected) {
   failures.push(`${label}: 与 scripts/hosts.mjs 不一致\n  期望 ${JSON.stringify(expected)}\n  实际 ${JSON.stringify(actual)}`)
 }
 
-compare('package.json#engines.dsh', pkg.engines?.dsh, range)
+compare('package.json#engines.dsh', pkg.engines?.dsh, ENGINES_RANGE)
 compare('package.json#dsh.compatibility.dshReleases', pkg.dsh?.compatibility?.dshReleases, releases)
-compare('dsh.plugin.json#engines.dsh', manifest.engines?.dsh, range)
+compare('dsh.plugin.json#engines.dsh', manifest.engines?.dsh, ENGINES_RANGE)
 compare('dsh.plugin.json#version', manifest.version, pkg.version)
 // 兼容性闸门只读 @deepseek-ai/dsh* 前缀的 peer range（不读 engines.dsh），
 // 一个都不能漏：少了宿主换代时不会拒载，而是装载后运行期报错。
@@ -58,7 +58,7 @@ if (check) {
   }
 } else if (failures.length > 0) {
   // 版本号以 package.json 为源，把同号刷进 dsh.plugin.json（不然改版本必遗漏一处，V1 闸抓不到）
-  pkg.engines = { ...pkg.engines, dsh: range }
+  pkg.engines = { ...pkg.engines, dsh: ENGINES_RANGE }
   pkg.dsh = { ...pkg.dsh, compatibility: { ...pkg.dsh?.compatibility, dshReleases: releases } }
   // peer 表重建：保留非 dsh-scope 的 peer（如 cordis），dsh* 项一律等于 client.inject 集合与同一 range
   const kept = Object.fromEntries(Object.entries(pkg.peerDependencies ?? {}).filter(([name]) => !name.startsWith('@deepseek-ai/dsh')))
@@ -67,7 +67,7 @@ if (check) {
   const meta = Object.fromEntries(Object.entries(pkg.peerDependenciesMeta ?? {}).filter(([name]) => !name.startsWith('@deepseek-ai/dsh')))
   for (const name of clientPeers) meta[name] = { ...meta[name], optional: true }
   pkg.peerDependenciesMeta = meta
-  manifest.engines = { ...manifest.engines, dsh: range }
+  manifest.engines = { ...manifest.engines, dsh: ENGINES_RANGE }
   if (manifest.version !== pkg.version) {
     manifest.version = pkg.version
     process.stdout.write(`dsh.plugin.json#version 同步为 ${pkg.version}\n`)

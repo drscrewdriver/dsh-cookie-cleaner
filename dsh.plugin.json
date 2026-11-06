@@ -1,10 +1,10 @@
 {
   "id": "dsh-cookie-cleaner",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "main": "./src/index.js",
   "description": "Cookie 清理器：解决桌面客户端启动报 `desktop welcome: Web authentication failed`（HTTP 431，随机端口致 dsh-auth-* cookie 堆积溢出请求头上限）的现象。只读播报 cookie 库里残留的本地登录凭据（dsh-auth-*，含请求头占用水位与距 431 阈值余量），随包分发「客户端完全退出后」可执行的清理命令（独占写锁 + .bak 备份，账号凭据/会话/插件配置不受影响）；设置面可体检 profile 的 cordis.patch.yml 并一键修复 `connection.cookieMaxAgeDays`（cookie 有效期，可回滚）。",
   "engines": {
-    "dsh": "0.1.0-rc.2 || 0.1.0-rc.3 || 0.1.0-rc.6 || 0.1.0-rc.7 || 0.1.0-rc.8 || 0.1.1-rc.1 || 0.1.1-rc.2 || 0.1.2-rc.1 || 0.1.5-rc.1 || 0.1.5-rc.2 || 0.1.5-rc.3 || 0.1.7-rc.1 || 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5 || 0.2.2-rc.1"
+    "dsh": ">=0.2.1 <0.3.0"
   },
   "contributes": {}
 }
