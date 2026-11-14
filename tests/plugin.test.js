@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite'
 import * as plugin from '../src/index.js'
 import { statCookies, setLang } from '../src/core.js'
 import { cookieCleanerCommandText } from '../src/report.js'
-import { HOSTS, orRange, ENGINES_RANGE, PEER_RANGE } from '../scripts/hosts.mjs'
+import { HOSTS, ENGINES_RANGE, PEER_RANGE } from '../scripts/hosts.mjs'
 
 // 钉住输出语言：这些断言校的是中文文案，靠探测会在 LANG=C.UTF-8 的机器（如 WSL）上翻英文。
 // 语言本身的差异另有 cli.test.js 的 --lang 专项覆盖。
