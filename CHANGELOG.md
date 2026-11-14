@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.6.4 (2026-11-14)
+
+- **修复：守护关闭时水位归零（接线错位）**。原因两层：
+  1. 观测 Cookie 头的代码长在 `installRuntimeGuard` 里，而它被 `if (cfg.runtimeGuard !== true) return` 整体短路——守护一关，实时读数渠道跟着没了；
+  2. 剩下的磁盘阶梯只能读已落盘的 jar。Chromium 只在**优雅退出**时写盘，强杀/崩溃后磁盘库长期停在旧快照（本机实测：36864 B、mtime 停在 12:03，而 15:04 已重启并在使用），于是面板与命令面双双报 `0 条（共 0 条）`。
+- **修正接线**：新增 `observeCookieHeader()` + `installCookieObserver()`（`src/runtime-guard.js`），作为**只读旁路**无条件挂在 `webServer` 的 `request` 上；`runtimeGuard` 只管抬 `maxHeaderSize` 与下发退休行。水位优先级：请求头实时观测 > 借句柄快照 > 普通只读。
+- **统一入口**：命令面 / 面板 `cookie` 数据臂 / patch 体检均改走 `cookieWaterLevel(cfg)`；`--json` 新增 `observed` 与 `headerBytes`，文本新增「水位 实时（请求头观测）」行；没观测到启动 cookie 时完全退回磁盘档，不编造数据。
+- **测试**：新增 `tests/cookie-observer.test.js`（7 例：形状统计/数组头/非 MINTED 不越界/无 cookie 请求不清读数/dispose 后不更新/旁路抛错不影响请求）；`command-contract.test.js` 改为钉住“观测臂必须在 runtimeGuard 短路之前”。全量 gate：204 tests / 203 pass / 1 skip / 0 fail。
+- **真机验证**（TUI profile 宿主 0.2.2-rc.3，守护处于关闭）：token 交换后 `/cookie-cleaner status` 报
+  `1 条 dsh-auth-*（共 1 条），请求头约 224 B / 上限 16384 B（1.4%）`，`ladder:"observed-header"`、`source:"request-header"`。
+
+## 0.6.3 (2026-11-14)
+
+- **命令面读数接线修正**：`/cookie-cleaner status|clean|patch` 与面板共用读数阶梯 `readCookieStat()`——普通只读被 Chromium 独占（`busy`）时回落 `statCookiesLive()`（借宿主自己持有的句柄做快照，内置 5s 节流 + 60s 缓存）。桌面端运行期不再只报“读不到”，面板有水位的命令面也有水位。
+- **扫描范围护栏**：新增导出 `shouldUseLiveLadder(env, proc)`，仅在宿主进程（Electron 主进程 `process.type==='browser'` 或 `process.versions.electron` 存在）启用借句柄；独立 node（单测/脚本）保持普通只读，避免系统级扫描把测试拖超时。`DSH_COOKIE_LIVE_LADDER=1|on|0|off` 可显式覆盖。
+- **`--json` 增补来源字段**：`{ladder, source, snapshot, verdict, authCookies, totalCookies}`，脚本可区分真水位与 busy 回档；输出仍单行。
+- **0.6.2 回退**：撤销误加的“非 Desktop 宿主回不适用”运行时短路——那个短路把桌面版命令面也变成只提示，等于没接线。
+- **测试**：新增 `tests/live-ladder-gate.test.js`（5 例）；`command-contract.test.js` 的阶梯契约改为“命令面与面板共用 + 扫句柄仅限宿主进程”。全量 gate：198 tests / 197 pass / 1 skip / 0 fail。
+
+## 0.6.2 (2026-11-14)
+
+- **回退运行时闸门**：删除 `DSH_DESKTOP_DEFAULT_PROFILE` 判断，`status|clean|patch` 在 Desktop/TUI/CLI 一律走真实逻辑（“TUI 上价值有限”只写进 README，不进代码）。
+- **命令输出契约**：新增 `clipOut`（单行 ≤100、总行 ≤40）与 `--json` 包装（`{ok, cmd:'cookie-cleaner', sub, data|error}`）。
+
+## 0.6.1 (2026-11-09)
+
+- **守护面板改为「改完即存」**：去掉保存按钮。`runtimeGuard` 勾选/取消**立即写入**（乐观更新，失败回滚）；`retireAbove` / `keep` 两个数字失焦或回车即写。无需再点保存，与开关同样的 `configEditor` 写入/HMR 热生效路径。
+
+## 0.6.0 (2026-11-09)
+
+- **运行期守护接线到设置面板**：卡片新增「运行期守护」一块——`runtimeGuard` 开关 + `retireAbove` / `keep` 两个阈值输入 + 保存按钮；读写走后端桥 `guard/get` / `guard/set`，写走宿主 `configEditor.edit()`（目标插件 Config schema 校验 + 原子写 + HMR 热应用），写后回显生效值。默认仍禁用，与手写 patch 等价。
+- **Host 侧**：`patch-guard.js` 新增 `readGuard` / `writeGuard`（只动白名单四键，其余 config 原样保留；无变化不写）；`api-routes.js` 新增 `guard/get` / `guard/set` 两路由（仍 POST-only），`endpoint` 把 body 透传给 run；`index.js` 把 getGuard/setGuard 接进 registerPatchRoutes。
+- **Client 侧**：`card.tsx` 新增 `GuardPanel`（开关 + 两个 number，主题令牌配色）；`routes.ts` 新增两条字面量 + `GuardView` 类型；`locales.ts` 新增 8 个界面键（`guard.*`，9 语齐备）。
+- **测试**：`api-routes.test.js` 由「三条」改「五条」，并把 `guardGet/guardSet` 纳入两半 URL 同串的钉。全量 gate：193 tests / 192 pass / 1 skip / 0 fail。
+- **兼容性**：无 config-editor 时面板显示「不可改」而不报错；默认值不变。
+
+## 0.5.0 (2026-11-09)
+
+- **新增 `retireAbove` 阈值触发：条目数 > N 才退休**。解决“不想每次请求都动 jar、想攒到一定量再清”的诉求：
+  `retireAbove: 40` 时，只要 Cookie 头里合法 `dsh-auth-*` 条数 ≤ 40 就**完全不动**（连 Set-Cookie 都不发）；
+  超过 40 才按尾部 `keep` 收敛。默认 `0` = 不设阈值（保持“每次按 keep 收敛”的旧行为）。
+- **runtime-guard**：`installRuntimeGuard` 新增 `retireAbove` 选项（夹到 0–10000），`retire()` 在 collect 后早退；`DEFAULTS`/`LIMITS` 导出同步。
+- **Config**：新增 `retireAbove: 0`（volatile）；`runtimeGuard` 仍**默认禁用**，装开后才生效。
+- **测试**（+3，共 13 例）：≤ 阈值不发删除行、> 阈值删到 keep、默认 0 保持旧行为。
+- **兼容性**：默认值不改任何现有行为；仅在 `runtimeGuard: true` 且显式设 `retireAbove > 0` 时才改变节奏。
+
+## 0.4.0 (2026-11-09)
+
+- **新增 `--older-than=<小时>`：按创建时间清理**。`dsh-cookie-cleaner --clean --older-than=24` 只删
+  `creation_utc` 早于“现在 - N 小时”的 `dsh-auth-*`（可小数，`0.5` = 30 分钟）。这条能力属**离线 CLI 独有**：
+  它直连 SQLite 读得到 `creation_utc`；运行期守护走 HTTP 只能拿到 `name=value`，读不到创建时间，因此没有该开关。
+- **core**：`buildDeleteStatement` / `cleanCookies` 新增 `olderThanHours`（默认 0 = 关），可与 `--expired-only`
+  叠加为 AND（更保守）；`0` / 负数 / 非数字一律忽略。`creation_utc` 阈值同样以 BigInt 绑定（微秒时间戳超 2^53）。
+- **文案**（9 语）：新增 `scopeOlderThan`（`创建超过 {hours} 小时` / `older than {hours}h` …），`deleted` 行用它。
+- **测试**（+2）：`buildDeleteStatement` 的 `creation_utc` 阈值语句/BigInt 参数、与 `expiredOnly` 叠加、0/负/NaN 忽略；
+  全量 190 tests / 189 pass / 1 skip / 0 fail。
+- **真机验证**：注入 75 条（33×60h 前 + 33×25h 前 + 9 条真实）后，`--older-than=24 --dry-run` 精确报
+  66 条；实跑 `Deleted 66 (older than 24h)`，库 53248 B → 20480 B，保留 9 条最近（header 2052 B / 12.5%）。
+
+## 0.3.0 (2026-11-09)
+
+- **新增运行期守护（可选，`runtimeGuard` 默认关）**：薄整合自第三方
+  [`dsh-auth-cookie-guard`](https://github.com/jitianjiyan/dsh-auth-cookie-guard)，把 431 防护从"停机整清"扩展到"日常收敛"。
+  实现：`src/runtime-guard.js`——①抬 `webServer` 监听器 `server.maxHeaderSize`（默认 64 KiB；
+  Node 每 accept 新连接才读该属性，运行时赋值对新连接当场生效）；②在 `request` 事件上 prepend `retire`，
+  只读 Cookie 头里的**名字**（`dsh-auth-<43 base64url>`），保留尾部 `keep` 条 + 当前端口那一条，其余下发
+  `Set-Cookie: name=; Max-Age=0; Path=/; Expires=...` 让浏览器自己从 jar 与磁盘库退休；
+  ③每响应最多 96 条删除行（~12 KiB，留在 Node HTTP 客户端 16 KiB 响应头预算内；大 jar 分多轮收敛）；
+  ④不解 cookie 值（签名会话载荷）、不写日志、不新增依赖，仍**不直连 SQLite**。
+- **Config 新增三项**（均 `volatile`）：`runtimeGuard: false` / `maxHeaderBytes: 65536`（夹到 16 KiB–1 MiB）/ `keep: 4`（夹到 1–64）。
+  挂载点用独立的 `ctx.inject(['webServer'])` 分支，**不依赖 `configEditor`**——headless/fiber 环境无 `webServer` 时静默降级、
+  不阻塞现有命令面/patch 面。禁用（默认）下与 0.2.x 行为完全一致。
+- **文案**（9 语）：新增 `guardOn` / `guardOff` 两档状态行，面板与命令面共用；`patch check` 输出末尾会带一句
+  "运行期守护：开/关（预算 / keep / cap）"，用户不靠日志也能看。
+- **测试**（`tests/runtime-guard.test.js`，10 例）：303 对象写头合并、三参数写头、平铺数组、无 header 走
+  `setHeader` 兜底、`stale=0` 不包装 `writeHead`（幂等）、`MAX_RETIRE_PER_RESPONSE=96` 分批、keep + current 保底、
+  `maxHeaderSize` 赋值对新连接生效 + dispose 还原、`bounded` 夹位、`onRetire` 四元组不带名字/值。
+  全量 `node --test tests/*.test.js`：188 tests / 187 pass / 1 skip（预期：POSIX chmod 用例在 Windows skip）/ 0 fail。
+- **README**：首段从"两条互斥路线"改为"本插件两条都提供（运行期 + 离线）"；`关键约束` 澄清**直连 SQLite** 的限制，
+  不再误伤 HTTP 运行期路径；新增 [运行期守护（可选）](#运行期守护可选) 完整章节（机制 / 怎么开 / 边界）；
+  「与运行期守护的分工」改写为「本插件 runtimeGuard / 离线 `--clean` / 第三方 guard」三方叠加规则。
+- **兼容性**：向后兼容，默认关；升级不强制改任何 profile。与第三方 `dsh-auth-cookie-guard` **建议二选一**
+  （同时开会双份下发删除行、日志重复）。
+
 ## 0.2.1 (2026-11-06)
 
 - **端口写入能力整体删除**（用户裁决 2026-11-05）：防 431 真正有效的是 **cookie 寿命注入**，

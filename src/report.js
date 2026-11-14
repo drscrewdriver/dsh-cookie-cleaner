@@ -204,6 +204,20 @@ export function patchReportText(result, cfg = {}) {
       lines.push(live ?? `${String(c.authCookies ?? '?')} dsh-auth-* / ${String(c.totalCookies ?? '?')} total`)
     }
   }
+  // 运行期守护状态行（面板与命令面共用）：runtimeGuard 字段存在才渲染，旧行为不受影响。
+  if (result.runtimeGuard !== undefined) {
+    lines.push('')
+    if (result.runtimeGuard === true) {
+      lines.push(patchText('text', 'guardOn', lang, {
+        budget: String(result.maxHeaderBytes ?? 65536),
+        keep: String(result.keep ?? 4),
+        cap: '96',
+      }))
+    } else {
+      lines.push(patchText('text', 'guardOff', lang))
+    }
+  }
+
   if (cfg.outcome !== undefined) lines.push('', patchOutcomeText(cfg.outcome, { lang }))
   return lines.join('\n')
 }

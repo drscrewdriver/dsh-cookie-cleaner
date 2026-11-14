@@ -162,15 +162,26 @@ test('commands 服务缺席时静默降级（headless 线不得 fatal）', () =>
   assert.equal(ctx.commands.length, 0)
 })
 
-// 借句柄的预算边界：只有用户显式点面板「体检」那条才允许扫句柄表。
-// 真机踩过：命令面 `patch check` 也接了阶梯，测试里就去做系统级扫描，整个测试文件超时。
-// 这条静态契约防止以后“为了同构”把扫描重新接回命令面/CLI/启动播报。
-test('句柄扫描只留给面板：命令面/CLI/启动播报走普通只读打开', () => {
+// 水位接线的两段事故：
+// ① 面板接了借句柄快照、命令面只走普通只读 → 桌面运行期面板有水位、命令面只报“读不到”。
+// ② 观测 Cookie 头的代码跟 `runtimeGuard` 一起被关掉 → 守护关闭时水位归零（磁盘 jar
+//    只在优雅退出时落盘，强杀后是旧快照甚至 0 条），把“没落盘”误报成“没有 cookie”。
+// 现在：观测臂无条件挂，水位优先级 = 请求头观测 > 借句柄快照 > 普通只读。
+test('水位接线：观测臂无条件挂，命令面/面板与它同源', () => {
   const src = (name) => fs.readFileSync(path.join(import.meta.dirname, '..', 'src', name), 'utf8')
   const index = src('index.js')
   const cli = src('cli.js')
-  assert.match(index, /cookie: \(\) => statCookiesLive\(/, '面板读数应接阶梯')
-  assert.match(index, /cookieBrief\(\(\) => statCookies\(/, '命令面应走普通只读打开')
-  assert.match(index, /stat = statCookies\(\{ userDataRoot/, '启动播报应走普通只读打开')
+  const observerAt = index.indexOf('observer = installCookieObserver(server')
+  const guardGateAt = index.indexOf('if (cfg.runtimeGuard !== true) return')
+  assert.ok(observerAt >= 0, '水位观测臂必须存在')
+  assert.ok(guardGateAt >= 0, '退休开关仍在')
+  assert.ok(observerAt < guardGateAt, '观测臂必须在 runtimeGuard 短路之前挂上')
+  assert.match(index, /const \{ stat, ladder, observed \} = cookieWaterLevel\(cfg\)/, '命令面应走统一水位')
+  assert.match(index, /cookie: \(\) => cookieWaterLevel\(current\(\)\)\.stat/, '面板应走统一水位')
+  assert.match(index, /cookieBrief\(\(\) => cookieWaterLevel\(current\(\)\)\.stat\)/, 'patch 体检应走统一水位')
+  assert.match(index, /statCookiesLive\(\{ userDataRoot: cfg\.userDataRoot \}\)/, '无观测时应回落借句柄快照')
+  assert.match(index, /observed\.minted > 0/, '没观测到启动 cookie 时不得编造水位')
   assert.doesNotMatch(cli, /statCookiesLive/, 'CLI 不许做句柄扫描')
 })
+
+

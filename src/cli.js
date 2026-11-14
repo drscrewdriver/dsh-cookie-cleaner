@@ -30,6 +30,7 @@ function usage() {
   dsh-cookie-cleaner                        查看现状：库在哪、多少条 dsh-auth-*、多少已过期
   dsh-cookie-cleaner --clean                删除回环域(127.0.0.1/localhost/[::1])下全部 dsh-auth-*
   dsh-cookie-cleaner --clean --expired-only 保守档：只删已过期的
+  dsh-cookie-cleaner --clean --older-than=24 只删创建超过 24 小时的（可小数，如 0.5=30 分钟）
   dsh-cookie-cleaner --clean --dry-run      只看会删几条，不写盘
   dsh-cookie-cleaner --db=<完整路径>         手动指定 cookie 库（非默认安装/flatpak/snap 用）
 
@@ -59,11 +60,13 @@ function dshHomeOf(env) {
 }
 
 function parseArgs(argv) {
-  const options = { clean: false, expiredOnly: false, dryRun: false, noBackup: false, noVacuum: false, db: '', lang: '', help: false, version: false, command: '', sub: 'check', profile: 'desktop', patchFile: '', targetDays: 1 }
+  const options = { clean: false, expiredOnly: false, olderThan: 0, dryRun: false, noBackup: false, noVacuum: false, db: '', lang: '', help: false, version: false, command: '', sub: 'check', profile: 'desktop', patchFile: '', targetDays: 1 }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--clean') options.clean = true
     else if (arg === '--expired-only') options.expiredOnly = true
+    else if (arg === '--older-than') options.olderThan = Number(argv[++i])
+    else if (arg.startsWith('--older-than=')) options.olderThan = Number(arg.slice('--older-than='.length))
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--no-backup') options.noBackup = true
     else if (arg === '--no-vacuum') options.noVacuum = true
@@ -177,8 +180,14 @@ function main() {
       process.exitCode = okReason ? 0 : 1
       return
     }
+    if (!Number.isFinite(options.olderThan) || options.olderThan < 0) {
+      process.stderr.write(`--older-than 必须是 ≥ 0 的小时数，实际：${String(options.olderThan)}\n`)
+      process.exitCode = 1
+      return
+    }
     const result = core.cleanCookies({
       expiredOnly: options.expiredOnly,
+      olderThanHours: options.olderThan,
       dryRun: options.dryRun,
       noBackup: options.noBackup,
       noVacuum: options.noVacuum,
@@ -194,8 +203,11 @@ function main() {
       process.stdout.write(msg('dryRun', { count: result.wouldDelete, path: result.path }) + '\n' + msg('dryRunTail', {}) + '\n')
       return
     }
+    const scope = result.olderThanHours > 0
+      ? msg('scopeOlderThan', { hours: result.olderThanHours })
+      : result.expiredOnly ? msg('scopeExpired', {}) : msg('scopeAll', {})
     const lines = [
-      msg('deleted', { count: result.deleted, scope: result.expiredOnly ? msg('scopeExpired', {}) : msg('scopeAll', {}) }),
+      msg('deleted', { count: result.deleted, scope }),
       msg('dbSize', { path: result.path, before: result.beforeBytes, after: result.afterBytes }),
     ]
     if (result.backup) {

@@ -431,3 +431,17 @@ npm run prepack       # 发布前自动跑 gate
 ## License
 
 MIT
+
+## TUI 终端面（dsh-tui）
+
+dsh-tui 不加载插件的 client 半边（面板/卡片/设置页），也调不到插件自有 RPC；工具调用只显示一行摘要。人可读、人可操作的面只剩宿主斜杠命令。输出约定：单行 ≤100 字符、总行 ≤40、无 ANSI、两空格对齐；写操作默认 dry、加 `--yes` 才执行；`--json` 输出单行 JSON。
+
+> 水位从哪来（重要）：真正会撞 431 的是**浏览器实际发出的 Cookie 头**（内存 jar）。插件在 `webServer` 的 `request` 上挂一个**只读观测臂** `installCookieObserver()`，它**与 `runtimeGuard` 开关无关**——守护关掉时水位照样看得见。读数优先级：请求头实时观测 > 借句柄快照 > 普通只读。磁盘 jar 只在优雅退出时落盘，强杀/崩溃后会停在旧快照甚至 0 条，所以它只作辅证，输出里会标「非实时」。借句柄扫描只在宿主进程启用（`shouldUseLiveLadder()`）；独立 TUI/CLI 进程不空转扫全机句柄表。可用 `DSH_COOKIE_LIVE_LADDER=1|on|0|off` 显式覆盖；`--json` 的 `ladder` / `source` / `observed` 字段会告诉你这次用的是哪一档。
+
+| 命令 | 作用 |
+|---|---|
+| `/cookie-cleaner status` | 既有命令：本地登录凭据（dsh-auth-*）报告 |
+| `/cookie-cleaner clean` | 既有命令：清理（需先完全退出客户端） |
+| `/cookie-cleaner patch check|fix|revert|plan` | 既有命令：cordis.patch.yml 体检/修复 |
+
+命令由插件自己在宿主侧注册（`ctx.inject(['commands'], …)`）：命令服务缺席的老宿主线上不激活、不报错。

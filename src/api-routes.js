@@ -15,12 +15,14 @@
 /** 命名空间 = npm 包名（settings ns、卡 id、桥路径三处同串）。 */
 export const NS = 'dsh-cookie-cleaner'
 
-/** 三条路由：体检 / 修复 / 回滚。（端口写入只走命令面，面板不提供控件，所以不开写端点） */
+/** 桥路由：体检 / 修复 / 回滚 + 运行期守护读/写。（端口写入面板不提供，不开端点） */
 export function bridgeRoutesFor(ns = NS) {
   return Object.freeze({
     check: `/api/${ns}/patch/check`,
     fix: `/api/${ns}/patch/fix`,
     revert: `/api/${ns}/patch/revert`,
+    guardGet: `/api/${ns}/guard/get`,
+    guardSet: `/api/${ns}/guard/set`,
   })
 }
 
@@ -111,7 +113,7 @@ export function registerPatchRoutes(webServer, guard, defaults = {}) {
             guardMode: body?.guardMode === 'expression' ? 'expression' : defaults.guardMode,
             lang: typeof body?.lang === 'string' ? body.lang : defaults.lang,
           }
-          const value = await run(options)
+          const value = await run(options, body)
           sendJson(res, 200, { ok: true, value })
         }).catch((e) => {
           sendJson(res, 200, { ok: false, code: 'internal', message: String(e && e.message ? e.message : e) })
@@ -129,5 +131,8 @@ export function registerPatchRoutes(webServer, guard, defaults = {}) {
   })
   endpoint(routes.fix, (options) => guard.fix(options))
   endpoint(routes.revert, () => guard.revert())
+  // 运行期守护：读当前生效值 / 写入白名单四键（走 guard 的 configEditor 编辑通道）
+  endpoint(routes.guardGet, () => (typeof defaults.getGuard === 'function' ? defaults.getGuard() : { available: false }))
+  endpoint(routes.guardSet, (_options, body) => (typeof defaults.setGuard === 'function' ? defaults.setGuard(body ?? {}) : { kind: 'no-entry' }))
   return offs
 }

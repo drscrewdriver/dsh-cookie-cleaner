@@ -13,7 +13,21 @@ export const routes = {
   check: '/api/dsh-cookie-cleaner/patch/check',
   fix: '/api/dsh-cookie-cleaner/patch/fix',
   revert: '/api/dsh-cookie-cleaner/patch/revert',
+  guardGet: '/api/dsh-cookie-cleaner/guard/get',
+  guardSet: '/api/dsh-cookie-cleaner/guard/set',
 } as const
+
+/** 运行期守护当前生效值（面板开关 + 两个阈值）。 */
+export interface GuardView {
+  available?: boolean
+  runtimeGuard: boolean
+  maxHeaderBytes: number
+  keep: number
+  retireAbove: number
+  kind?: string
+  changed?: string[]
+  message?: string
+}
 
 /** 宿主统一信封：`{ok, value}` 或 `{ok:false, code, message}`。 */
 export interface BridgeReply<T> {

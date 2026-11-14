@@ -291,16 +291,29 @@ function assertSafeIdentifiers(hostKeys, prefix) {
 /**
  * 删除语句 + 绑定参数。`expiredOnly` 走参数绑定（时间戳不拼字符串），
  * 且以 BigInt 绑定——微秒时间戳超出 2^53。
+ *
+ * `olderThanHours`：只删 `creation_utc` 早于“现在 - N 小时”的条目（按**创建时间**清理，
+ * 不是按过期时间）。这条路径只有离线 CLI 能跑——它直连 SQLite 读得到 `creation_utc`；
+ * 运行期守护走 HTTP 读不到创建时间，所以守护侧没有这个开关。
+ * 可与 `expiredOnly` 叠加（AND，更保守）。
  * @returns {{sql:string, values:Array<bigint|string>}}
  */
-export function buildDeleteStatement({ expiredOnly = false, hostKeys = LOOPBACK_HOST_KEYS, prefix = AUTH_COOKIE_PREFIX } = {}) {
+export function buildDeleteStatement({ expiredOnly = false, olderThanHours = 0, hostKeys = LOOPBACK_HOST_KEYS, prefix = AUTH_COOKIE_PREFIX } = {}) {
   assertSafeIdentifiers(hostKeys, prefix)
   const hosts = hostKeys.map((key) => `'${key}'`).join(', ')
-  const where = `host_key IN (${hosts}) AND name LIKE ?`
+  const conds = [`host_key IN (${hosts})`, 'name LIKE ?']
+  const values = [`${prefix}%`]
   if (expiredOnly) {
-    return { sql: `DELETE FROM cookies WHERE ${where} AND expires_utc > 0 AND expires_utc <= ?`, values: [`${prefix}%`, BigInt(windowsNowMicroseconds())] }
+    conds.push('expires_utc > 0', 'expires_utc <= ?')
+    values.push(BigInt(windowsNowMicroseconds()))
   }
-  return { sql: `DELETE FROM cookies WHERE ${where}`, values: [`${prefix}%`] }
+  const hours = Number(olderThanHours)
+  if (Number.isFinite(hours) && hours > 0) {
+    // creation_utc 也是 Chromium 微秒时间戳；阈值 = 现在 - N 小时（Number 在 1e16 量级误差仅微秒级）
+    conds.push('creation_utc > 0', 'creation_utc <= ?')
+    values.push(BigInt(windowsNowMicroseconds() - Math.round(hours * 3_600_000_000)))
+  }
+  return { sql: `DELETE FROM cookies WHERE ${conds.join(' AND ')}`, values }
 }
 
 /** 表结构自检：不是 Chromium cookie 库就收手，绝不对未知库执行写语句。 */
@@ -373,7 +386,7 @@ export function statCookies({ userDataRoot = '', explicitPath = '', env = proces
  */
 export function cleanCookies(options = {}) {
   const {
-    expiredOnly = false, noBackup = false, noVacuum = false, dryRun = false,
+    expiredOnly = false, olderThanHours = 0, noBackup = false, noVacuum = false, dryRun = false,
     explicitPath = '', userDataRoot = '', env = process.env, sqlite,
     timestamp = () => defaultTimestamp(), platform = process.platform,
     copyFile = (from, to) => fs.copyFileSync(from, to),
@@ -386,7 +399,7 @@ export function cleanCookies(options = {}) {
     }
   }
   const target = found[0]
-  const { sql, values } = buildDeleteStatement({ expiredOnly })
+  const { sql, values } = buildDeleteStatement({ expiredOnly, olderThanHours })
   const selectSql = sql.replace('DELETE FROM', 'SELECT COUNT(*) AS c FROM')
   const handle = openDatabase(target.path, { write: true, sqlite, platform })
   try {
@@ -394,7 +407,7 @@ export function cleanCookies(options = {}) {
     const wouldDelete = Number(handle.prepare(selectSql).get(...values).c)
     if (dryRun) {
       handle.exec('ROLLBACK')
-      return { ok: true, dryRun: true, path: target.path, bytes: target.bytes, wouldDelete, sql, expiredOnly }
+      return { ok: true, dryRun: true, path: target.path, bytes: target.bytes, wouldDelete, sql, expiredOnly, olderThanHours }
     }
     let backup = ''
     const backupSidecars = []
@@ -433,7 +446,7 @@ export function cleanCookies(options = {}) {
     }
     return {
       ok: true, dryRun: false, path: target.path, beforeBytes: target.bytes, afterBytes,
-      deleted, backup, backupSidecars, skippedSidecars, sql, expiredOnly,
+      deleted, backup, backupSidecars, skippedSidecars, sql, expiredOnly, olderThanHours,
     }
   } catch (e) {
     try { handle.exec('ROLLBACK') } catch { /* 事务已结束，忽略 */ }

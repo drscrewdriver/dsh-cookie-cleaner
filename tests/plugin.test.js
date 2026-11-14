@@ -186,3 +186,5 @@ test('cli.js 带 shebang 且已登记为 npm bin', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.bin['dsh-cookie-cleaner'], 'src/cli.js')
 })
+
+

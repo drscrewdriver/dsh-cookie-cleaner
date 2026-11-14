@@ -10,7 +10,7 @@ import * as React from 'react'
 
 import { render } from './locales'
 import { postJson, routes } from './routes'
-import type { ActionView, CheckView, Finding, RowView } from './routes'
+import type { ActionView, CheckView, Finding, GuardView, RowView } from './routes'
 
 export interface CardProps {
   /** 当前语言的取词函数（跟着宿主 locale 走，卡片不缓存旧值）。 */
@@ -78,6 +78,71 @@ function CookieLine({ cookie, t }: { cookie?: CheckView['cookie']; t: (key: stri
         pct: String(occupancy.pct),
         remaining: String(occupancy.remaining),
       })}
+    </div>
+  )
+}
+
+/**
+ * 运行期守护面板：一个开关（runtimeGuard）+ 两个阈值（retireAbove / keep）。
+ * 读写都走后端桥（configEditor 写本插件自己那行），写后回显生效值——不凭手写 YAML。
+ */
+function GuardPanel({ t }: { t: (key: string) => string }): React.ReactElement | null {
+  const [g, setG] = React.useState<GuardView | undefined>(undefined)
+  const [busy, setBusy] = React.useState(false)
+  const [note, setNote] = React.useState('')
+  const mounted = React.useRef(true)
+  React.useEffect(() => {
+    mounted.current = true
+    postJson<GuardView>(routes.guardGet, {}).then((v) => { if (mounted.current) setG(v) }).catch(() => { /* 无 config-editor 时静默，不刷红 */ })
+    return () => { mounted.current = false }
+  }, [])
+  if (g === undefined) return null
+  if (g.available === false) return <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>{t('guard.unavailable')}</div>
+  const toInt = (e: React.ChangeEvent<HTMLInputElement>) => { const n = Math.trunc(Number(e.target.value)); return Number.isFinite(n) ? n : 0 }
+  // 改完即存（无保存按钮）：先乐观更新本地态，后端失败则回滚到服务端值
+  const commit = async (next: GuardView) => {
+    const prev = g
+    setG(next)
+    setBusy(true); setNote('')
+    try {
+      const v = await postJson<GuardView>(routes.guardSet, { runtimeGuard: next.runtimeGuard, maxHeaderBytes: next.maxHeaderBytes, keep: next.keep, retireAbove: next.retireAbove })
+      if (!mounted.current) return
+      setG(v)
+      setNote(v.kind === 'noop' ? t('guard.noop') : t('guard.saved'))
+    } catch (error) {
+      if (mounted.current) {
+        setG(prev)
+        setNote(render(t('state.failed'), { message: String((error as Error).message ?? error) }))
+      }
+    } finally {
+      if (mounted.current) setBusy(false)
+    }
+  }
+  const inputStyle = { width: 72, padding: '2px 6px', border: '1px solid var(--dsw-color-border)', borderRadius: 6, background: 'var(--dsw-color-surface)', color: 'var(--dsw-color-text)' } as const
+  return (
+    <div style={{ display: 'grid', gap: 6, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--dsw-color-border)' }}>
+      <div style={{ fontWeight: 600 }}>{t('guard.title')}</div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input type="checkbox" checked={g.runtimeGuard} disabled={busy} onChange={(e) => void commit({ ...g, runtimeGuard: e.target.checked })} />
+        {t('guard.enable')}
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.9em' }}>
+        {t('guard.retireAbove')}
+        <input type="number" min={0} max={10000} value={g.retireAbove} disabled={busy}
+          onChange={(e) => setG({ ...g, retireAbove: toInt(e) })}
+          onBlur={() => void commit(g)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void commit(g) }}
+          style={inputStyle} />
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.9em' }}>
+        {t('guard.keep')}
+        <input type="number" min={1} max={64} value={g.keep} disabled={busy}
+          onChange={(e) => setG({ ...g, keep: toInt(e) })}
+          onBlur={() => void commit(g)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void commit(g) }}
+          style={inputStyle} />
+      </label>
+      {busy || note !== '' ? <div style={{ fontSize: '0.85em', color: busy ? 'var(--dsw-color-muted)' : 'var(--dsw-color-primary)' }}>{busy ? t('state.busy') : note}</div> : null}
     </div>
   )
 }
@@ -171,6 +236,8 @@ export function PatchCard({ t }: CardProps): React.ReactElement {
         : null}
       {/* cookie 库读数（见 CookieLine：读得到就给实时值，读不到才说 busy） */}
       <CookieLine cookie={state?.cookie} t={t} />
+      {/* 运行期守护：开关 + 两个阈值（写本插件自己那行，写后回显生效值） */}
+      <GuardPanel t={t} />
       {/* 审计行：修复前根本没有覆盖行时（快照里无旧值），不能说“修复前 ?”——
           那是把“无据”伪装成一个值；改说“此前无覆盖行”。 */}
       {state?.lastFix

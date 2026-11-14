@@ -293,3 +293,5 @@ test('B 写路径穿过真命令面：patch fix 真改临时 profile、revert �
   assert.match(snapshot, /patch-snapshot--/, '快照名必须带 profile 身份')
   assert.ok(back.result.text.length > 0)
 })
+
+
