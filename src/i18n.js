@@ -46,6 +46,7 @@ const zh = Object.freeze({
   deleted: '已删除 {count} 条 dsh-auth-*（{scope}）',
   scopeAll: '全部',
   scopeExpired: '仅已过期',
+  scopeOlderThan: '创建超过 {hours} 小时',
   dbSize: '  库：{path}  {before} B → {after} B',
   backup: '  备份：{backup}',
   backupWith: '（含 {sidecars}）',

@@ -291,7 +291,48 @@ export function createPatchGuard(deps) {
     }
   }
 
-  return { check, plan, fix, revert, state }
+  /**
+   * 本插件自己的配置行（patch id = 'cookie-cleaner'）——运行期守护开关与阈值都在这行。
+   * 读写都走同一个 configEditor.edit（目标插件 Config schema 校验 + 原子写 + HMR 热应用）。
+   */
+  const OWN_ROW_ID = 'cookie-cleaner'
+  const GUARD_KEYS = ['runtimeGuard', 'maxHeaderBytes', 'keep', 'retireAbove']
+  function guardEntry() {
+    const ce = getEditor()
+    if (ce === undefined || typeof ce.entries !== 'function') return undefined
+    return ce.entries().find((row) => row.options.id === OWN_ROW_ID || row.options.name === 'dsh-cookie-cleaner')
+  }
+  /** 读当前生效的守护配置（拿不到行就 available:false，不编造默认值当生效态）。 */
+  function readGuard() {
+    const entry = guardEntry()
+    if (entry === undefined) return { available: false, runtimeGuard: false, maxHeaderBytes: 65536, keep: 4, retireAbove: 0 }
+    const c = entry.options.config ?? {}
+    return {
+      available: true,
+      runtimeGuard: c.runtimeGuard === true,
+      maxHeaderBytes: Number.isInteger(c.maxHeaderBytes) ? c.maxHeaderBytes : 65536,
+      keep: Number.isInteger(c.keep) ? c.keep : 4,
+      retireAbove: Number.isInteger(c.retireAbove) ? c.retireAbove : 0,
+    }
+  }
+  /** 写守护配置（只动白名单四键，其余 config 原样保留；无变化不写）。 */
+  async function writeGuard(patch = {}) {
+    const entry = guardEntry()
+    if (entry === undefined) return { kind: 'no-entry' }
+    const current = entry.options.config ?? {}
+    const next = { ...current }
+    if (patch.runtimeGuard !== undefined) next.runtimeGuard = patch.runtimeGuard === true
+    if (patch.maxHeaderBytes !== undefined) next.maxHeaderBytes = Math.trunc(Number(patch.maxHeaderBytes))
+    if (patch.keep !== undefined) next.keep = Math.trunc(Number(patch.keep))
+    if (patch.retireAbove !== undefined) next.retireAbove = Math.trunc(Number(patch.retireAbove))
+    const changed = GUARD_KEYS.filter((key) => JSON.stringify(current[key]) !== JSON.stringify(next[key]))
+    if (changed.length === 0) return { kind: 'noop', value: readGuard() }
+    const written = await attemptEdit(entry, next)
+    if (!written.ok) return { kind: 'failed', message: written.message }
+    return { kind: 'saved', changed, value: readGuard(), retried: written.retried === true }
+  }
+
+  return { check, plan, fix, revert, readGuard, writeGuard, state }
 }
 
 /**

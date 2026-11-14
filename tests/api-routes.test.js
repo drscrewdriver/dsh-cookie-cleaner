@@ -63,13 +63,13 @@ const GUARD = {
   revert: async () => ({ kind: 'reverted' }),
 }
 
-test('三条路由都注册为 exact，NS 等于 npm 包名', () => {
+test('五条路由都注册为 exact，NS 等于 npm 包名', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
   assert.equal(NS, pkg.name, 'ns 必须与包名同串（卡 id / settings ns / 桥路径三处一致）')
   const server = fakeServer()
   const offs = registerPatchRoutes(server, GUARD, { targetDays: 1, guardMode: 'literal' })
-  assert.equal(offs.length, 3, '面板只剩三条路由（端口写端点已撤）')
-  assert.deepEqual([...server.routes.values()].map((r) => r.kind), ['exact', 'exact', 'exact'])
+  assert.equal(offs.length, 5, '面板：体检/修复/回滚 + 运行期守护读/写（端口写端点已撤）')
+  assert.deepEqual([...server.routes.values()].map((r) => r.kind), ['exact', 'exact', 'exact', 'exact', 'exact'])
   assert.deepEqual([...server.routes.keys()], Object.values(bridgeRoutesFor()))
 })
 
@@ -138,10 +138,10 @@ test('两半路由同串：从 client 源码抽字面量，与宿主派生函数
   const client = fs.readFileSync(clientFile, 'utf8')
   // client 侧必须是硬字面量（它不能 import 宿主侧模块）；从 `check: '…'` 形状里抓
   const grabbed = {}
-  for (const [, key, url] of client.matchAll(/(check|fix|port|revert):\s*'([^']+)'/g)) grabbed[key] = url
+  for (const [, key, url] of client.matchAll(/(check|fix|port|revert|guardGet|guardSet):\s*'([^']+)'/g)) grabbed[key] = url
   const host = bridgeRoutesFor()
-  assert.deepEqual(Object.keys(grabbed).sort(), ['check', 'fix', 'revert'], 'client 侧三条路由都得是可抓取的字面量')
-  for (const name of ['check', 'fix', 'revert']) {
+  assert.deepEqual(Object.keys(grabbed).sort(), ['check', 'fix', 'guardGet', 'guardSet', 'revert'], 'client 侧五条路由都得是可抓取的字面量')
+  for (const name of ['check', 'fix', 'revert', 'guardGet', 'guardSet']) {
     assert.equal(grabbed[name], host[name], `两半的 ${name} 路由不一致：client ${grabbed[name]} ≠ host ${host[name]}`)
   }
   // 端口写端点两侧都必须不存在：面板不再写端口，没人调的写端点只是攻击面

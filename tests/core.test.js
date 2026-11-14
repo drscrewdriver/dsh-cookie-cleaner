@@ -62,6 +62,24 @@ test('buildDeleteStatement 保守档把时间戳作为 BigInt 绑定参数而非
   assert.ok(values[1] > 0n)
 })
 
+test('buildDeleteStatement --older-than：按 creation_utc 阈值过滤，参数是 BigInt', () => {
+  const { sql, values } = buildDeleteStatement({ olderThanHours: 24 })
+  assert.match(sql, /creation_utc > 0 AND creation_utc <= \?$/)
+  assert.equal(values.length, 2)
+  assert.equal(typeof values[1], 'bigint', 'creation_utc 也是微秒时间戳，必须 BigInt 绑定')
+  assert.ok(values[1] > 0n)
+})
+
+test('buildDeleteStatement --older-than 与 --expired-only 叠加为 AND；0/负数/非法小时数被忽略', () => {
+  const both = buildDeleteStatement({ expiredOnly: true, olderThanHours: 6 })
+  assert.match(both.sql, /expires_utc <= \?/)
+  assert.match(both.sql, /creation_utc <= \?/)
+  assert.equal(both.values.length, 3)
+  assert.equal(buildDeleteStatement({ olderThanHours: 0 }).sql.includes('creation_utc'), false)
+  assert.equal(buildDeleteStatement({ olderThanHours: -5 }).sql.includes('creation_utc'), false)
+  assert.equal(buildDeleteStatement({ olderThanHours: Number.NaN }).sql.includes('creation_utc'), false)
+})
+
 test('candidateCookieDbs：macOS 走 Library/Application Support，不掺 APPDATA/XDG', () => {
   const list = candidateCookieDbs('', 'darwin', { APPDATA: 'C:\\Roaming', XDG_CONFIG_HOME: '/home/u/cfg', HOME: '/Users/tester' })
   assert.equal(list[0], '/Users/tester/Library/Application Support/@deepseek-ai/dsh-desktop/Network/Cookies')
