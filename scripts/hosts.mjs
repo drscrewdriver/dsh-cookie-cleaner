@@ -8,11 +8,10 @@
  */
 
 /**
- * 判定闸门声明面（2026-11-06 起改 range 声明，对齐 dsh-arrowkey-nav a6fb783 迁移）：
- * `engines.dsh` 两处写点（package.json / dsh.plugin.json）发这一串；
- * HOSTS 枚举继续供 `dsh.compatibility.dshReleases` 展示与 peer range 下发。
+ * 判定闸门声明面：`engines.dsh` 两处写点（package.json / dsh.plugin.json）与**全部**
+ * `@deepseek-ai/dsh-*` peer 共用下面这个区间（定义在 HOSTS 之后，下限由其起点推导）。
+ * HOSTS 枚举继续供 `dsh.compatibility.dshReleases` 展示（已实测细胞证据）。
  */
-export const ENGINES_RANGE = '>=0.2.1 <0.3.0'
 
 /** 已验证可装载的宿主线（逐 rc 单列，供 compatibility 展示与 peer range）。 */
 export const HOSTS = [
@@ -40,10 +39,19 @@ export const HOSTS = [
   '0.2.2-rc.1',
 ]
 
+/**
+ * 唯一宿主声明串（2026-11-14 形状统一）：engines.dsh 两处写点与全部 dsh-* peer 共用；
+ * 下限＝HOSTS 起点，上限 `<0.3.0-0`（`-0` 堵住 0.3.0-rc.* 泄漏）。
+ */
+export const ENGINES_RANGE = `>=${HOSTS[0]} <0.3.0-0`
+
 /** 每个宿主线的兼容判定。 */
 export const STATUS = 'compatible'
 
-/** npm 语法的逐串 or-range：`0.1.0-rc.2 || 0.1.0-rc.3 || ...`。 */
+/** npm 语法的逐串 or-range：`0.1.0-rc.2 || 0.1.0-rc.3 || ...`（仅作展示/证据）。 */
 export function orRange(hosts = HOSTS) {
   return hosts.join(' || ')
 }
+
+/** peer 下发用串：与 engines.dsh 同串（2026-11-14 起不再下发枚举）。 */
+export const PEER_RANGE = ENGINES_RANGE

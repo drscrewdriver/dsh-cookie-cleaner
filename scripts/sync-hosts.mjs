@@ -7,11 +7,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { HOSTS, STATUS, orRange, ENGINES_RANGE } from './hosts.mjs'
+import { HOSTS, STATUS, orRange, ENGINES_RANGE, PEER_RANGE } from './hosts.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const check = process.argv.includes('--check')
-const range = orRange(HOSTS)
+const range = PEER_RANGE
 const releases = Object.fromEntries(HOSTS.map((host) => [host, STATUS]))
 const failures = []
 

@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite'
 import * as plugin from '../src/index.js'
 import { statCookies, setLang } from '../src/core.js'
 import { cookieCleanerCommandText } from '../src/report.js'
-import { HOSTS, orRange, ENGINES_RANGE } from '../scripts/hosts.mjs'
+import { HOSTS, orRange, ENGINES_RANGE, PEER_RANGE } from '../scripts/hosts.mjs'
 
 // 钉住输出语言：这些断言校的是中文文案，靠探测会在 LANG=C.UTF-8 的机器（如 WSL）上翻英文。
 // 语言本身的差异另有 cli.test.js 的 --lang 专项覆盖。
@@ -70,7 +70,10 @@ test('装载身份：manifest.id 必须是包名，@deepseek-ai/dsh* peer 必须
   const injected = pkg.dsh?.client?.inject ?? []
   assert.ok(injected.length > 0, '声明了 client 半就必须列出 inject 包')
   for (const name of injected) {
-    assert.equal(pkg.peerDependencies[name], orRange(HOSTS), `${name} 的 peer 必须与 HOSTS 枚举串相同（hosts.mjs 单源）`)
+    // 2026-11-14 形状统一：peer 与 engines.dsh 同串（区间），不再下发枚举
+    assert.equal(pkg.peerDependencies[name], PEER_RANGE, `${name} 的 peer 必须与 engines.dsh 同串（hosts.mjs 单源）`)
+    assert.equal(pkg.peerDependencies[name], ENGINES_RANGE, `${name} 的 peer 必须等于 ENGINES_RANGE`)
+    assert.ok(!pkg.peerDependencies[name].includes('||'), `${name} 的 peer 不得是枚举串`)
     assert.equal(pkg.peerDependenciesMeta?.[name]?.optional, true, `${name} 得标 optional（宿主提供，不是 npm 安装物）`)
   }
   // 不得给没引用的包占 peer（旧版占过 renderer，它与 client.inject 无对应关系）

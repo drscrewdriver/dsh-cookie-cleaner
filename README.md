@@ -2,7 +2,11 @@
 
 清理 DSH（DeepSeek Harness）**桌面客户端** cookie 库里堆积的本地登录凭据 cookie（`dsh-auth-*`），
 解决的现象是启动报 `desktop welcome: Web authentication failed`（HTTP 431，约 70 次随机端口启动后必现，见下文因果链），
-并把「为什么只能在客户端关闭时清理」讲清楚——不用每次再去问一遍 AI。
+并把「为什么**直连 SQLite 那条清理路径**只能在客户端关闭时进行」讲清楚——不用每次再去问一遍 AI。
+
+**两条互补路径，本插件都提供**：① **运行期守护**（可选，`runtimeGuard` 默认关）——抬监听器头部预算，
+并在握手响应里下发 `Set-Cookie Max-Age=0` 让浏览器自己退休陈旧 cookie，**不碰 SQLite、客户端不用关**；
+② **离线整清**（`--clean`）——客户端完全退出后直连 SQLite 一次性删干净，覆盖“已被 431 锁死 / 换 profile”这类急救场景。
 
 输出支持 9 种语言（zh / en / ja / ko / fr / de / it / ru / es），跟随系统 locale。
 
@@ -18,14 +22,19 @@
 - 鉴权只按当前 authority 派生的**那一个名字**取值，其余同名前缀条目本就永远读不到；
 - 每次启动都会用 launch token 重新换发。
 
-**关键约束（Windows 与 Linux 实测过 busy 与权限两种形态）**：这个库在客户端运行期间**常常**被 Chromium 占着打不开，
-而宿主插件跑在 Electron 的纯 Node 模式子进程里，拿不到 `session.cookies`。所以：
+**关键约束（Windows 与 Linux 实测过 busy 与权限两种形态）**：`Network/Cookies` 这块 SQLite 在客户端运行期间**常常**被 Chromium 独占打不开，
+而宿主插件跑在 Electron 的纯 Node 模式子进程里也拿不到 `session.cookies`。所以**直连 SQLite 的写盘路径**只能在客户端已完全退出时跑：
 
-> 清理动作不可能由「插件在启动时」完成——它只能发生在客户端已完全退出的时间窗里，
-> 而那个时刻宿主插件本身并不存在。因此本仓库把执行体做成**包内独立脚本**，
-> 插件半只做只读播报和命令指引，**永不写库**。
+> **本仓库插件半的离线写盘动作不可能由「插件在启动时」完成**——它只能发生在客户端已完全退出的时间窗里，
+> 而那个时刻宿主插件本身并不存在。因此离线执行体是**包内独立脚本**（`src/cli.js`），
+> 插件半默认只做只读播报和命令指引，**永不直连 SQLite 写库**。
 >
-> 但**读数不是这样**：面板与命令面会先尝试只读打开（`readOnly`），打开成功就给实时值
+> **但运行期守护走的不是 SQLite，而是 HTTP**：宿主在自己跟浏览器的握手上发 `Set-Cookie: dsh-auth-<hash>=; Max-Age=0; Path=/`，
+> 让**浏览器自己**把陈旧启动 cookie 从 jar 与磁盘库删掉，插件不打开那个文件。
+> 这层**可选**（`runtimeGuard`，默认关），开启后仍不碰 `Network/Cookies`；
+> 详见 [运行期守护](#运行期守护可选)。
+>
+> 读数不是这样：面板与命令面会先尝试只读打开（`readOnly`），打开成功就给实时值
 > （条数 / 请求头字节 / 占用百分比 / 距 431 还剩多少），打不开才明说读不到。
 > 两者不拿同一个结论互相绑死：读不到之时的 busy 分支仍然保留，但不再当成必然。
 
@@ -76,24 +85,68 @@ flatpak / snap 安装的客户端路径在常规位置之外，通常需要 `--d
 
 ## 安装
 
-```shell
-# 作为 DSH 插件（提供 /cookie-cleaner 只读播报）
-dsh --profile desktop plugin add dsh-cookie-cleaner
+分两半，各装各的：
 
-# 清理工具随包分发；装完即可用 profile 里的别名，或全局安装后直接敲命令
+### ① 插件半（`/cookie-cleaner` 命令 + 面板卡片 + 设置项）
+
+DSH Desktop 的 profile 由**客户端独占管理**，命令行
+`dsh plugin --profile desktop add` **会被硬拒**
+（`profile "desktop" is managed exclusively by the Electron application`），
+连 `dsh --profile desktop --dump-config`（boot 期检查）都被同一闸拦下——**不要走这条路**。
+正确装法二选一：
+
+- **推荐 · GUI 装**：客户端里 → 插件管理 → 搜 `dsh-cookie-cleaner` → 安装；重启客户端生效。
+- **手动 · CLI 装**（客户端**已完全退出**，`Get-Process | ? ProcessName -match 'DeepSeek|dsh'` 为空再动，
+  避开文件锁；agent 若跑在 Qoder 而非 DSH 内，关闭 desktop 不影响会话）：
+
+  ```powershell
+  # Windows · 已发 npm 版：走 registry
+  pnpm --dir "$env:USERPROFILE\.dsh\profiles\desktop" add dsh-cookie-cleaner
+
+  # Windows · 未发 npm 的本地 tgz：走 file:（file: 依赖通常不受 minimumReleaseAgeExclude 发布年龄闸约束）
+  pnpm --dir "$env:USERPROFILE\.dsh\profiles\desktop" add file:E:\path\to\dsh-cookie-cleaner-0.2.1.tgz
+  ```
+
+  ```shell
+  # macOS / Linux
+  pnpm --dir ~/.dsh/profiles/desktop add dsh-cookie-cleaner
+  # 本地未发版：pnpm --dir ~/.dsh/profiles/desktop add file:/path/to/dsh-cookie-cleaner-0.2.1.tgz
+  ```
+
+  **首次挂载**要手动把包名 `dsh-cookie-cleaner` 追加到 profile `package.json` 里的 `dsh.profile.bundles` 数组，
+  否则 bundle 不会被装载；**升级同一包不需要**再动（数组已含）。改完重启客户端生效。
+
+  > 改 profile 目录里的 YAML/JSON（工作区之外）建议用 Node 脚本读写、UTF-8 无 BOM，
+  > pwsh `Set-Content` 默认带 BOM 会卡住 YAML 校验。装前务必备份
+  > `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` / `cordis.patch.yml`。
+  > `cordis.patch.yml` 含自定义标签 `!<tag:yaml.org,2002:js>`（把 `port ?? 34568` 这类当 JS 求值），
+  > **校验结构要用 `yaml` 包（`parseAllDocuments`）而不是 `js-yaml` 严格 `load`**，
+  > 后者会在自定义标签处误报 unknown tag。desktop profile 有 300+ 插件，
+  > `pnpm peers check` 的 peer WARN 多为既有噪声，按包名过滤确认自家包无关即可。
+
+### ② CLI 清理工具半（客户端**关闭时**独立跑的清理脚本）
+
+清理动作只能发生在客户端已完全退出的时间窗，所以工具与插件装载解耦。任选其一：
+
+```shell
+# A. 全局安装：拿到全局命令 `dsh-cookie-cleaner`（与插件半无关，不装 profile 也能跑）
 npm i -g dsh-cookie-cleaner
+
+# B. 不装全局：走 profile 别名或包内脚本
+# Windows（插件半已装进 profile 后可用）
+%USERPROFILE%\.dsh\profiles\desktop\node_modules\.bin\dsh-cookie-cleaner.cmd --clean
+# macOS / Linux
+~/.dsh/profiles/desktop/node_modules/.bin/dsh-cookie-cleaner --clean
+node ~/.dsh/profiles/desktop/node_modules/dsh-cookie-cleaner/src/cli.js --clean
 ```
 
-> desktop profile 由客户端自己管理，命令行 `dsh plugin add` 可能被拒
-> （`profile "desktop" is managed exclusively by the Electron application`）——
-> 那种情况下在客户端的插件管理界面里装；**清理脚本本身是独立的**，
-> 全局 npm 安装或 `node <包目录>/src/cli.js` 都能跑，不依赖宿主装载。
+> **两半互不依赖**：只做清理不需要插件半；只跑 `/cookie-cleaner` 播报不需要全局命令。
 
-别名路径（装进 profile 后）：
+别名路径速查（走 profile 里的 `.bin` 时）：
 
 ```shell
 # Windows
-%USERPROFILE%\\.dsh\profiles\desktop\node_modules\.bin\dsh-cookie-cleaner.cmd
+%USERPROFILE%\.dsh\profiles\desktop\node_modules\.bin\dsh-cookie-cleaner.cmd
 # macOS / Linux
 ~/.dsh/profiles/desktop/node_modules/.bin/dsh-cookie-cleaner
 ```
@@ -104,6 +157,7 @@ npm i -g dsh-cookie-cleaner
 dsh-cookie-cleaner                        查看现状：库在哪、多少条 dsh-auth-*、多少已过期
 dsh-cookie-cleaner --clean                删除回环域(127.0.0.1/localhost/[::1])下全部 dsh-auth-*
 dsh-cookie-cleaner --clean --expired-only 保守档：只删已过期的
+dsh-cookie-cleaner --clean --older-than=24 只删创建超过 N 小时的（按 creation_utc，可小数如 0.5=30 分钟）
 dsh-cookie-cleaner --clean --dry-run      只看会删几条，不写盘
 dsh-cookie-cleaner --db=<完整路径>         手动指定 cookie 库
 dsh-cookie-cleaner --lang=de              指定输出语言（缺省跟随系统 locale）
@@ -186,7 +240,9 @@ Node 22 上会有一条 `ExperimentalWarning: SQLite`，可用 `node --no-warnin
 - 命令 `/cookie-cleaner patch` `[check|fix|revert|plan]`：体检 / 修复 profile 的 `cordis.patch.yml` 结构。
 - 设置 `dsh-cookie-cleaner`：`userDataRoot`（覆盖 Electron userData 根）、`expiredOnly`（保守档措辞）、
   `lang`（钉住输出语言，留空=自动探测）、`guardDays`（cookie 寿命目标档，修复按钮写这个值）、
-  `guardMode`（`literal` 只动目标键 / `expression` 同时把 bundle 层的 `!!js` 表达式还原回去）。
+  `guardMode`（`literal` 只动目标键 / `expression` 同时把 bundle 层的 `!!js` 表达式还原回去）、
+  `runtimeGuard`（运行期守护开关，默认关）、`maxHeaderBytes`（守护抬升的头部预算，默认 64 KiB）、
+  `keep`（守护保留的尾部 cookie 条数，默认 4）、`retireAbove`（阈值触发：条目数 > 此值才退休，默认 0=不设阈值）。启运行期守护的细节见 [运行期守护（可选）](#运行期守护可选)。
 - 浏览器卡片：设置页顶级节「Cookie 清理器」与插件页配置卡各一处，三个按钮（体检 / 修复 / 回滚）。
 
 ## profile patch 体检与修复
@@ -308,6 +364,69 @@ npm run prepack       # 发布前自动跑 gate
 
 跨平台验证：测试套件同时要求在 Windows 与 Linux（含 `chmod 000` 归因用例，
 在 Windows 上自动 skip）跑绿；POSIX 语义在 WSL/原生 Linux 实测过。
+
+## 运行期守护（可选）
+
+默认关。开了以后，插件在宿主 `webServer` 就绪时挂两层防御，**全程只走 HTTP，不打开 `Network/Cookies`**：
+
+| 层 | 行为 | 默认值 |
+|---|---|---|
+| 头部预算 | 抬 `server.maxHeaderSize`（Node 每 accept 新连接时才读该属性，运行时赋值对新连接当场生效）| `maxHeaderBytes: 65536`（夹到 16 KiB – 1 MiB）|
+| 退休旧 cookie | 每个请求只读 Cookie 头里的**名字**（`dsh-auth-<43 base64url>`），保留尾部 `keep` 条 + 当前端口那一条，其余 `Set-Cookie Max-Age=0; Path=/` 从浏览器 jar 删除（每响应最多 96 条，约 12 KiB）| `keep: 4`（夹到 1 – 64）|
+| 触发阈值 | 启动 cookie 条数 **> `retireAbove`** 才开始退休（≤ 阈值时完全不动、不发 Set-Cookie）；`0` = 不设阈值（每次按 keep 收敛）| `retireAbove: 0`（夹到 0 – 10000）|
+
+### 为什么两层都要
+
+- **只抬预算**：约 350 次启动后依旧撞墙，只是把 72 次变成 350 次；
+- **只清理而不抬预算**：431 在 Node 的 HTTP 解析层就被拒了，请求根本进不到 `'request'` 事件，清理逻辑跑不到。
+
+### 怎么开
+
+**面板（推荐）**：设置页「Cookie 清理器」卡片里有「运行期守护」一块——勾「启用运行期守护」、填 `retireAbove` / `keep`，点「保存守护设置」。写走宿主 `configEditor`（目标插件 Config schema 校验 + 原子写 + HMR 热生效），写后回显生效值。
+
+**或手写 profile patch**（`maxHeaderBytes` 一般不调）：
+
+```yaml
+- id: cookie-cleaner
+  name: dsh-cookie-cleaner
+  config:
+    runtimeGuard: true
+    maxHeaderBytes: 65536   # 可选，默认值
+    keep: 4                 # 可选，默认值
+    retireAbove: 40         # 可选：条目数 >40 才退休（默认 0 = 每次收敛）
+```
+
+### 边界（写清楚，不留想象空间）
+
+- **只读名字与顺序，不解 cookie 值**：值是 DSH 的签名会话载荷（authority/issuedAt/expiresAt），
+  这些 cookie 都是 `Path=/`，浏览器按创建时间从旧到新发送（RFC 6265 §5.4），名字足够定位，值既不参与保留判断也不再被解析/记录/使用。
+- **保留当前端口那条**：即使 `keep` 配得很小、或系统时钟回拨，也不会把正在使用的那条删掉。
+- **对异常格式零影响**：只匹配 `dsh-auth-` + 43 位 base64url 的精确形状；若未来 cookie 名字格式变化，退化结果是「预算提升、不再清理」，而不是破坏会话。
+- **同 host 多实例**：浏览器 cookie 按 host 共享，插件会退休「最新 `keep` 条 + 当前端口」之外的启动 cookie；同一份 profile 同时跑多个实例时，较旧实例的登录可能被清理，需要重新走一次欢迎页握手。当前实例自己的 cookie 始终保留。
+- **头部预算的副作用**：默认把监听器的 `maxHeaderSize` 提到 64 KiB。默认回环监听下这只影响本机；如果把 DSH 绑到回环之外，远端请求可以多占每连接头部内存——对外暴露时应加反向代理/访问控制，或把 `maxHeaderBytes` 调低。
+- **与第三方 `dsh-auth-cookie-guard` 二选一**：两者语义不冲突，但同时开会双份下发删除行、日志重复。具体分工见 [与运行期守护的分工](#与运行期守护的分工)。
+- **卸载时还原**：dispose 会把 `maxHeaderSize` 还原到装载前的值（等值判断，不踩别的插件的新值），并摘掉 `request` 监听。
+
+## 与运行期守护的分工
+
+上游修复 431 有两条**语义互补、互不遮蔽**的路径：本插件的 `runtimeGuard`（运行期 HTTP 路径）与
+**离线 `--clean`**（停机 SQLite 直连），以及第三方的
+[`dsh-auth-cookie-guard`](https://github.com/jitianjiyan/dsh-auth-cookie-guard)（与本插件的运行期守护同构）：
+
+| 能力 | 本插件 · 离线 `--clean` | 本插件 · `runtimeGuard` / 第三方 guard |
+|---|---|---|
+| 何时动手 | **停机窗**（客户端已完全退出）| **运行期**（每次 HTTP 请求/响应）|
+| 动谁 | 直连 `Network/Cookies` SQLite，DELETE 行 | 响应头 `Set-Cookie Max-Age=0`，让浏览器自己退休 jar |
+| 是否需要抬 `server.maxHeaderSize` | 否 | 是，抬到 64 KiB（否则 431 卡在解析层，清理代码进不到应用层）|
+| 覆盖场景 | 已被 431 锁死无法握手 / 换 profile / 一次性大扫除 | 日常防堆积，无需用户操作 |
+| 卸载后行为 | 无残留（本来就是外部脚本）| dispose 时还原 `maxHeaderSize`、摘 `request` 监听 |
+
+**叠加规则**：
+
+- 本插件 `runtimeGuard` **与第三方 `dsh-auth-cookie-guard` 同时开**会双份下发删除行、日志重复。
+  同一 profile 建议二选一：要么用第三方常驻做运行期收敛、本插件只在**急救**时临时跑 `--clean`；
+  要么只装本插件，`runtimeGuard: true` 或定期停机 `--clean` 二择其一。
+- 本插件 `runtimeGuard` **与离线 `--clean` 不冲突**：前者日常收敛、后者急救，完全可共存。
 
 ## License
 
