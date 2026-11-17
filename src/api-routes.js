@@ -23,6 +23,9 @@ export function bridgeRoutesFor(ns = NS) {
     revert: `/api/${ns}/patch/revert`,
     guardGet: `/api/${ns}/guard/get`,
     guardSet: `/api/${ns}/guard/set`,
+    // v0.7.1：历史注入残留（旧版写进 profile 的 port 表达式）的读 / 清。
+    legacyGet: `/api/${ns}/legacy/get`,
+    legacyClean: `/api/${ns}/legacy/clean`,
   })
 }
 
@@ -134,5 +137,8 @@ export function registerPatchRoutes(webServer, guard, defaults = {}) {
   // 运行期守护：读当前生效值 / 写入白名单四键（走 guard 的 configEditor 编辑通道）
   endpoint(routes.guardGet, () => (typeof defaults.getGuard === 'function' ? defaults.getGuard() : { available: false }))
   endpoint(routes.guardSet, (_options, body) => (typeof defaults.setGuard === 'function' ? defaults.setGuard(body ?? {}) : { kind: 'no-entry' }))
+  // 历史注入残留：读现状 / 清理（清理本身还要过 canCleanLegacy 的能力闸）
+  endpoint(routes.legacyGet, () => (typeof defaults.getLegacy === 'function' ? defaults.getLegacy() : { available: false, found: false }))
+  endpoint(routes.legacyClean, () => (typeof defaults.cleanLegacy === 'function' ? defaults.cleanLegacy() : { kind: 'no-editor' }))
   return offs
 }

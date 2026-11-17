@@ -6,9 +6,12 @@
  * 代价被诚实地框住：这里只认 profile patch 层的**实际语法子集**——
  *   顶层块序列 `- ` 在第 0 列；`- id:` 覆盖行 / `- insert:` 新增行；
  *   条目字段 `id|name|config` 缩进 2；config 键缩进 4（靠「比 config: 更深」判定）；
- *   值形态只认 数字 / 布尔 / `'quoted'` / `[a, b]` / `[]` / `!!js 表达式`；行尾 ` #` 注释可剥。
- * 遇到子集外的构造（多文档、锚点、行内 flow 映射、游离缩进）一律 `ok:false` + 原因，
- * 由内核报 P11/skipped——**猜错的判定比不判定更坏**。
+ *   值形态只认 数字 / 布尔 / `'quoted'` / `[a, b]` / `[]` / `{a: 1}` / `{}` / `!!js 表达式`；
+ *   跨行 flow（`{` 或 `[` 未在本行闭合）整段跳过；行尾 ` #` 注释可剥。
+ * 遇到子集外的**结构**（多文档 `---`、锚点 `&x`、模板根 `[]` 之后又接分块行）才 `ok:false` + 原因，
+ * 由内核报 P11；**值的形态不参与这个判定**——`{}` 这类合法 flow 映射曾经被当成整层非法，
+ * 导致一处 `providers: {}` 让全层 112 行一起失效（issue #1，2026-11-17）。
+ * 取舍仍是同一条：**猜错的判定比不判定更坏**，所以值解析不了时降级为「值未知」，不升级为整层失败。
  *
  * 本模块只做数据，不判档、不写盘。
  */
@@ -23,15 +26,62 @@ function parseScalar(raw) {
   if (text === '' || text === '~' || text === 'null') return undefined
   if (text.startsWith('!!js ')) return { __jsExpr: text.slice(5).trim() }
   if (text === '[]') return []
-  if (text.startsWith('[') && text.endsWith(']')) {
+  // 跨行 flow（本行只写了开括号）：值未知，但**不是语法错误**——不升级为整层失败。
+  if (text.startsWith('[')) {
+    if (!text.endsWith(']')) return undefined
     const inner = text.slice(1, -1).trim()
     if (inner === '') return []
     return inner.split(',').map((part) => stripQuotes(part.trim()))
+  }
+  if (text.startsWith('{')) {
+    if (!text.endsWith('}')) return undefined
+    return parseFlowMap(text)
   }
   if (/^[-+]?\d+$/.test(text)) return Number(text)
   if (/^[-+]?\d*\.\d+$/.test(text)) return Number(text)
   if (text === 'true' || text === 'false') return text === 'true'
   return stripQuotes(text)
+}
+
+/**
+ * 解析行内 flow 映射（`{}` / `{a: 1, b: "x"}`）。
+ *
+ * 只做**值层面**的尽力而为：嵌套 flow、无法识别的键、跨行截断一律返回 `undefined`
+ * （= 值未知），由调用方当作「这个值读不出来」——**绝不因此把整层判成非法**。
+ * 这条边界就是 issue #1 的教训：`providers: {}` 是完全合法的 YAML，
+ * 曾经被判成 `inline flow map` 而让整层 112 行一起失效。
+ */
+function parseFlowMap(text) {
+  const inner = text.slice(1, -1).trim()
+  if (inner === '') return {}
+  // 嵌套 flow / 键值对里有括号：本子集不展开，交回「值未知」
+  if (/[{}[\]]/.test(inner)) return undefined
+  const out = {}
+  for (const part of splitFlow(inner)) {
+    const at = part.indexOf(':')
+    if (at <= 0) return undefined
+    out[stripQuotes(part.slice(0, at).trim())] = parseScalar(part.slice(at + 1))
+  }
+  return out
+}
+
+/** 按逗号切 flow 内容，引号内的逗号不算分隔符。 */
+function splitFlow(inner) {
+  const parts = []
+  let buf = ''
+  let quote = ''
+  for (const ch of inner) {
+    if (quote !== '') {
+      if (ch === quote) quote = ''
+      buf += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue }
+    if (ch === ',') { parts.push(buf); buf = ''; continue }
+    buf += ch
+  }
+  if (buf.trim() !== '') parts.push(buf)
+  return parts.map((p) => p.trim()).filter((p) => p !== '')
 }
 
 function stripQuotes(text) {
@@ -54,7 +104,11 @@ function indentOf(line) {
 function applyField(entry, key, raw) {
   if (key === 'id') entry.id = String(parseScalar(raw) ?? '')
   else if (key === 'name') entry.name = parseScalar(raw)
-  else if (key === 'config') entry.config = entry.config ?? {}
+  else if (key === 'config') {
+    // `config: {...}` 给了 flow 映射就用它；给空/跨行则开一个空壳等后续缩进行填。
+    const value = parseScalar(raw)
+    entry.config = value !== null && typeof value === 'object' && !Array.isArray(value) ? value : (entry.config ?? {})
+  }
   else entry[key] = parseScalar(raw)
 }
 
@@ -102,9 +156,9 @@ export function parsePatchText(text) {
       const kv = content.match(KEY_VALUE)
       if (kv === null) return fail(`unparsable row header: ${content.slice(0, 40)}`)
       if (kv[1] === 'config') {
-        if (/^\{.*\}$/.test(kv[2].trim())) return fail('inline flow map')
+        // `- config: {...}` 的 flow 写法：整段作为 config 值解析，不再判整层非法。
         configIndent = fieldsIndent
-        inConfig = true
+        inConfig = kv[2].trim() === ''
         applyField(entry, 'config', kv[2])
       }
       else applyField(entry, kv[1], kv[2])
@@ -134,7 +188,6 @@ export function parsePatchText(text) {
 
     // config 的键：深度必须恰好比 `config:` 本身多 2；更深的值是嵌套结构，不属于本次判定
     if (inConfig && indent === configIndent + 2) {
-      if (/^\{.*\}$/.test(kv[2].trim())) return fail('inline flow map')
       entry.config = entry.config ?? {}
       entry.config[kv[1]] = parseScalar(kv[2])
       continue
@@ -143,7 +196,6 @@ export function parsePatchText(text) {
     inConfig = false
     if (indent !== fieldsIndent) { skippedDeep += 1; continue }
     if (kv[1] === 'config') {
-      if (/^\{.*\}$/.test(kv[2].trim())) return fail('inline flow map')
       configIndent = indent
       inConfig = kv[2].trim() === ''
       applyField(entry, 'config', kv[2])

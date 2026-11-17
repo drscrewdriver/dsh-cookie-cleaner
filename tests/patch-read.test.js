@@ -108,17 +108,46 @@ test('真实 profile 里的深层嵌套（providers 列表）不得误报整层�
   assert.ok((parsed.skippedDeep ?? 0) > 0, '跳过的深度要有计数，不然不知道看了多少看不见的东西')
 })
 
-test('超出子集的构造一律 ok:false（宁可不判，也不猜）', () => {
+test('超出子集的**结构**构造一律 ok:false（宁可不判，也不猜）', () => {
   const cases = [
-    '- id: connection\n  name: x\n  config: {cookieMaxAgeDays: 1}\n',
     '- &anchor\n  id: connection\n  name: x\n',
     '--- \n- id: connection\n  name: x\n',
+    '[]\n- id: connection\n  name: x\n',
   ]
   for (const text of cases) {
     const parsed = parsePatchText(text)
     if (parsed.ok) assert.fail(`应判不可解析：${text.split('\n')[0]}`)
     assert.ok(parsed.reason, '必须有原因')
   }
+})
+
+test('行内 flow 映射是**合法值**，不是结构错误（issue #1 回归）', () => {
+  // 一处 `providers: {}` 曾让整层 112 行一起失效：值形态不得升级为整层失败。
+  const parsed = parsePatchText([
+    '- id: connection',
+    '  name: x',
+    '  config:',
+    '    cookieMaxAgeDays: 1',
+    '- id: llm-pi-ai',
+    '  name: y',
+    '  config:',
+    '    providers: {}',
+  ].join('\n'))
+  assert.equal(parsed.ok, true, parsed.reason)
+  assert.deepEqual(findOverrideRow(parsed, 'llm-pi-ai').config.providers, {}, '空 flow 映射要解析成 {}')
+  assert.equal(findOverrideRow(parsed, 'connection').config.cookieMaxAgeDays, 1, '坏值之前/之后的行都必须读到')
+})
+
+test('flow 映射的值尽力解析；解析不了降级为「值未知」，不判整层非法', () => {
+  const one = parsePatchText('- id: x\n  name: y\n  config:\n    providers: {a: 1, b: "s"}\n')
+  assert.equal(one.ok, true, one.reason)
+  assert.deepEqual(findOverrideRow(one, 'x').config.providers, { a: 1, b: 's' })
+
+  const nested = parsePatchText('- id: x\n  name: y\n  config:\n    providers: {a: {b: 1}}\n')
+  assert.equal(nested.ok, true, '嵌套 flow 属于本子集之外，但那是「值未知」不是「语法错误」')
+
+  const multiline = parsePatchText('- id: x\n  name: y\n  config:\n    providers: {\n      a: 1\n    }\n')
+  assert.equal(multiline.ok, true, '跨行 flow 同理，不得让整层失效')
 })
 
 test('后写的同 id 行赢（与 applyEntryPatches 的顺序语义一致）', () => {

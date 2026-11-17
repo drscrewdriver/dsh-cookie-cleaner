@@ -15,11 +15,31 @@ export const routes = {
   revert: '/api/dsh-cookie-cleaner/patch/revert',
   guardGet: '/api/dsh-cookie-cleaner/guard/get',
   guardSet: '/api/dsh-cookie-cleaner/guard/set',
+  legacyGet: '/api/dsh-cookie-cleaner/legacy/get',
+  legacyClean: '/api/dsh-cookie-cleaner/legacy/clean',
 } as const
 
-/** 运行期守护当前生效值（面板开关 + 两个阈值）。 */
+/** 历史注入残留现状（旧版写进 profile 的 port 表达式）。v0.7.1 */
+export interface LegacyView {
+  available?: boolean
+  rowFound?: boolean
+  found: boolean
+  expression?: string
+  fallback?: number
+  cleanupSupported?: boolean
+  kind?: string
+  changed?: string[]
+  removed?: string
+  message?: string
+  /** 清理后重新读到的现状（cleanLegacy 回传，用于就地刷新面板） */
+  state?: LegacyView
+}
+
+/** 运行期守护当前生效值（面板开关 + 两个阈值）。v0.7.0：开关拆成 retireStale / raiseHeaderBudget。 */
 export interface GuardView {
   available?: boolean
+  retireStale: boolean
+  raiseHeaderBudget: boolean
   runtimeGuard: boolean
   maxHeaderBytes: number
   keep: number

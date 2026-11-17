@@ -63,13 +63,13 @@ const GUARD = {
   revert: async () => ({ kind: 'reverted' }),
 }
 
-test('五条路由都注册为 exact，NS 等于 npm 包名', () => {
+test('七条路由都注册为 exact，NS 等于 npm 包名', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
   assert.equal(NS, pkg.name, 'ns 必须与包名同串（卡 id / settings ns / 桥路径三处一致）')
   const server = fakeServer()
   const offs = registerPatchRoutes(server, GUARD, { targetDays: 1, guardMode: 'literal' })
-  assert.equal(offs.length, 5, '面板：体检/修复/回滚 + 运行期守护读/写（端口写端点已撤）')
-  assert.deepEqual([...server.routes.values()].map((r) => r.kind), ['exact', 'exact', 'exact', 'exact', 'exact'])
+  assert.equal(offs.length, 7, '面板：体检/修复/回滚 + 运行期守护读/写 + 历史注入残留读/清（端口写端点已撤）')
+  assert.deepEqual([...server.routes.values()].map((r) => r.kind), ['exact', 'exact', 'exact', 'exact', 'exact', 'exact', 'exact'])
   assert.deepEqual([...server.routes.keys()], Object.values(bridgeRoutesFor()))
 })
 

@@ -163,6 +163,144 @@ export function candidateCookieDbs(userDataRoot = '', platform = process.platfor
   return out
 }
 
+/** 官方清理实现的函数名（desktop 外壳主进程里的标记字符串）。 */
+const NATIVE_CLEANUP_MARKER = 'removeLegacyHostCookies'
+
+/**
+ * 在二进制文件里搜一个 ASCII 标记，命中返回标记本身，否则 null。
+ *
+ * 为什么要这个：asar 容器把 `lib/main.js` 等文件原文拼在数据段，只有 Electron 打过补丁的
+ * `fs` 才能按路径读；纯 Node 子进程读不到。分块扫描只认字节，不解析 header，
+ * 也不把 200MB 一次读进内存（命中即停）。
+ * @param {string} file
+ * @param {string} marker
+ * @param {{chunkBytes?:number, readSync?:(fd:number, buffer:Buffer, offset:number, length:number, position:number)=>number, openSync?:Function, closeSync?:Function}} [io]
+ * @returns {string|null}
+ */
+export function scanBinaryFor(file, marker, io = {}) {
+  const openSync = io.openSync ?? fs.openSync
+  const readSync = io.readSync ?? fs.readSync
+  const closeSync = io.closeSync ?? fs.closeSync
+  const chunkBytes = io.chunkBytes ?? 4 * 1024 * 1024
+  const needle = Buffer.from(marker, 'utf8')
+  let fd
+  try {
+    fd = openSync(file, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const buffer = Buffer.alloc(chunkBytes + needle.length)
+    let position = 0
+    for (;;) {
+      let read
+      try {
+        read = readSync(fd, buffer, 0, buffer.length, position)
+      } catch {
+        return null
+      }
+      if (read === 0) return null
+      // 块尾可能截断标记：下一次从 position + read - (needle.length - 1) 续读
+      if (buffer.subarray(0, read).includes(needle)) return marker
+      if (read < buffer.length) return null
+      position += read - (needle.length - 1)
+    }
+  } finally {
+    try {
+      closeSync(fd)
+    } catch {
+      /* 关闭失败不影响结论 */
+    }
+  }
+}
+
+/**
+ * 探测宿主外壳是否**自带** cookie 清理（desktop `removeLegacyHostCookies`）。
+ *
+ * 为什么要有这个探测：官方在 desktop 0.2.2-rc.2 起自己会删 jar 里的 `dsh-auth-*`
+ * （走 Electron `session.cookies.remove`，比我们下发 Set-Cookie 更彻底、且能删掉
+ * 历史端口残留）。插件运行在 `ELECTRON_RUN_AS_NODE=1` 的纯 Node 子进程里，
+ * **拿不到** `session.cookies`，所以照抄不了官方手法，只能：
+ *   - 官方有 → 让位（别再重复清理，两套一起跑只会让水位读数抖动）；
+ *   - 官方无（目标区间 0.2.1 ~ 0.2.2-rc.1）→ 用 HTTP Set-Cookie 兜底。
+ *
+ * 判定不靠版本号猜：直接读已安装外壳主进程代码里有没有那个函数名。
+ * 读不到（未打包 / 权限 / 非 Electron 布局）→ `present:false`，即**保持插件兜底**，
+ * 宁可多做一次幂等清理，也不要误判成“官方已经管了”而留下无人清理的 431 隐患。
+ *
+ * @param {{userDataRoot?:string, platform?:string, env?:object, readFile?:(file:string)=>string|null}} [input]
+ * @returns {{present:boolean, evidence:string, checked:string[]}}
+ */
+export function detectNativeCleanup(input = {}) {
+  const platform = input.platform ?? process.platform
+  const env = input.env ?? process.env
+  // asar 是打包容器：`readFileSync('app.asar/lib/main.js')` 只有 Electron 打过补丁的 fs
+  // 才读得到；插件跑在纯 Node 子进程（ELECTRON_RUN_AS_NODE=1）里没有那个补丁。
+  // 所以这里读不了就走**二进制分块扫描**——asar 数据段就是原文拼接，直接搜标记字符串即可，
+  // 不需要解析 header，也不受 200MB 体积拖累（分块 + 命中即停）。
+  const read = input.readFile ?? ((file) => {
+    try {
+      return fs.readFileSync(file, 'utf8')
+    } catch {
+      return scanBinaryFor(file, NATIVE_CLEANUP_MARKER)
+    }
+  })
+  const pathModule = platform === 'win32' ? path.win32 : path.posix
+  const roots = []
+  const explicit = String(input.userDataRoot || '').trim()
+  if (explicit) roots.push(explicit)
+  else {
+    const home = env.HOME || env.USERPROFILE || os.homedir()
+    if (platform === 'win32' && env.APPDATA) {
+      for (const name of PRODUCT_DIR_NAMES) roots.push(pathModule.join(env.APPDATA, name))
+    } else if (platform === 'darwin') {
+      for (const name of PRODUCT_DIR_NAMES) roots.push(pathModule.join(home, 'Library', 'Application Support', name))
+    } else {
+      for (const name of PRODUCT_DIR_NAMES) roots.push(pathModule.join(env.XDG_CONFIG_HOME || pathModule.join(home, '.config'), name))
+    }
+  }
+  const checked = []
+  // 外壳安装根不按 userData 推（userData 在 %APPDATA%\@deepseek-ai\dsh-desktop，
+  // 安装目录在 %LOCALAPPDATA%\Programs\DeepSeek Harness，两者不同源）。
+  // 只认显式给的安装根 + 少数平台惯例，读不到就保持兜底（fail-safe 到「插件来做」）。
+  // 显式给安装根 = **只查这一个**（单测/多实例隔离）；不得再把平台默认目录掺进来，
+  // 否则「临时目录里没有标记」会被本机真实安装的存在掩盖成 present:true。
+  const explicitInstall = String(input.installRoot || '').trim()
+  const installRoots = []
+  if (explicitInstall !== '') {
+    installRoots.push(explicitInstall)
+  } else {
+    if (env.DSH_DESKTOP_HOME) installRoots.push(String(env.DSH_DESKTOP_HOME).trim())
+    const home = env.HOME || env.USERPROFILE || os.homedir()
+    if (platform === 'win32' && env.LOCALAPPDATA) {
+      installRoots.push(pathModule.join(env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness'))
+    } else if (platform === 'darwin') {
+      installRoots.push('/Applications/DeepSeek Harness.app/Contents/Resources/app')
+    } else {
+      installRoots.push(pathModule.join(home, '.local', 'share', 'deepseek-harness'))
+    }
+  }
+  for (const root of explicitInstall !== '' ? installRoots : [...installRoots, ...roots]) {
+    if (!root) continue
+    // 打包布局：<app>/resources/app.asar/lib/main.js —— asar 是普通文件，能整读；
+    // 未打包（开发态）：<app>/lib/main.js。两种都试，命中即判有。
+    for (const file of [
+      // asar 是**文件**不是目录：直接扫这个容器文件本身（数据段含 lib/main.js 原文）。
+      pathModule.join(root, 'resources', 'app.asar'),
+      pathModule.join(root, 'lib', 'main.js'),
+    ]) {
+      if (checked.includes(file)) continue
+      checked.push(file)
+      const text = read(file)
+      if (text === null || text === undefined) continue
+      if (text.includes(NATIVE_CLEANUP_MARKER)) {
+        return { present: true, evidence: `宿主外壳自带 removeLegacyHostCookies（${pathModule.basename(file)}）`, checked }
+      }
+    }
+  }
+  return { present: false, evidence: '未在已安装外壳里找到官方清理实现', checked }
+}
+
 /** 存在性过滤：返回真实存在的候选库（带大小），一个都没有 → 空数组。 */
 export function resolveCookieDbs({ userDataRoot = '', platform = process.platform, env = process.env } = {}) {
   const found = []

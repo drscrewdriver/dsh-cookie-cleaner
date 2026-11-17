@@ -17,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { MANAGED_ROWS, aggregateAll, assessRow, nextConfigFor } from './patch-model.js'
 import { findOverrideRow, parsePatchText, readPatchFile } from './patch-read.js'
+import { canCleanLegacy, findLegacyInjection, withoutLegacyInjection } from './legacy-injection.js'
 
 /** 嵌套事务错误：热重载期间的正常现象，不是配置问题。 */
 const NESTED_ERROR = /HMR transactions cannot be nested/i
@@ -296,7 +297,8 @@ export function createPatchGuard(deps) {
    * 读写都走同一个 configEditor.edit（目标插件 Config schema 校验 + 原子写 + HMR 热应用）。
    */
   const OWN_ROW_ID = 'cookie-cleaner'
-  const GUARD_KEYS = ['runtimeGuard', 'maxHeaderBytes', 'keep', 'retireAbove']
+  // v0.7.0：退休与抬预算拆成两键，旧 runtimeGuard 保留为「一键全开」的兼容写法。
+  const GUARD_KEYS = ['retireStale', 'raiseHeaderBudget', 'runtimeGuard', 'maxHeaderBytes', 'keep', 'retireAbove']
   function guardEntry() {
     const ce = getEditor()
     if (ce === undefined || typeof ce.entries !== 'function') return undefined
@@ -305,22 +307,38 @@ export function createPatchGuard(deps) {
   /** 读当前生效的守护配置（拿不到行就 available:false，不编造默认值当生效态）。 */
   function readGuard() {
     const entry = guardEntry()
-    if (entry === undefined) return { available: false, runtimeGuard: false, maxHeaderBytes: 65536, keep: 4, retireAbove: 0 }
+    if (entry === undefined) {
+      return {
+        available: false,
+        retireStale: true,
+        raiseHeaderBudget: false,
+        runtimeGuard: false,
+        maxHeaderBytes: 65536,
+        keep: 4,
+        retireAbove: 0,
+      }
+    }
     const c = entry.options.config ?? {}
+    const legacyOn = c.runtimeGuard === true
     return {
       available: true,
-      runtimeGuard: c.runtimeGuard === true,
+      // 未显式设置时回落到 schema 默认（清理默认开、抬预算默认关）。
+      retireStale: legacyOn || c.retireStale !== false,
+      raiseHeaderBudget: legacyOn || c.raiseHeaderBudget === true,
+      runtimeGuard: legacyOn,
       maxHeaderBytes: Number.isInteger(c.maxHeaderBytes) ? c.maxHeaderBytes : 65536,
       keep: Number.isInteger(c.keep) ? c.keep : 4,
       retireAbove: Number.isInteger(c.retireAbove) ? c.retireAbove : 0,
     }
   }
-  /** 写守护配置（只动白名单四键，其余 config 原样保留；无变化不写）。 */
+  /** 写守护配置（只动白名单键，其余 config 原样保留；无变化不写）。 */
   async function writeGuard(patch = {}) {
     const entry = guardEntry()
     if (entry === undefined) return { kind: 'no-entry' }
     const current = entry.options.config ?? {}
     const next = { ...current }
+    if (patch.retireStale !== undefined) next.retireStale = patch.retireStale === true
+    if (patch.raiseHeaderBudget !== undefined) next.raiseHeaderBudget = patch.raiseHeaderBudget === true
     if (patch.runtimeGuard !== undefined) next.runtimeGuard = patch.runtimeGuard === true
     if (patch.maxHeaderBytes !== undefined) next.maxHeaderBytes = Math.trunc(Number(patch.maxHeaderBytes))
     if (patch.keep !== undefined) next.keep = Math.trunc(Number(patch.keep))
@@ -332,7 +350,82 @@ export function createPatchGuard(deps) {
     return { kind: 'saved', changed, value: readGuard(), retried: written.retried === true }
   }
 
-  return { check, plan, fix, revert, readGuard, writeGuard, state }
+  /**
+   * 读「本插件历史版本注入的残留」当前状态（v0.7.1）。
+   *
+   * 为什么单独一个读臂而不是塞进 check：这不是"配置对不对"的判定，而是"插件自己留下的垃圾
+   * 还在不在"的账目。混进 patch 体检会让所有用户的体检结果突然多一条与 cookie 无关的告警。
+   *
+   * @param {{nativeCleanup?: boolean}} [options] 官方是否已自带 cookie 清理（0.2.2-rc.2+ 的事实判据）
+   */
+  function readLegacy(options = {}) {
+    const ce = getEditor()
+    if (ce === undefined || typeof ce.entries !== 'function') return { available: false, found: false }
+    const spec = MANAGED_ROWS.webserver
+    const entry = ce.entries().find((row) => row.options.id === spec.id)
+    if (entry === undefined) return { available: true, found: false, rowFound: false }
+    const configuration = (typeof ce.configuration === 'function' ? ce.configuration() : [])
+      .find((row) => row.entry.options.id === spec.id)
+    const hit = findLegacyInjection({
+      rowId: spec.id,
+      current: plain(entry.options.config ?? {}),
+      inherited: configuration?.inherited ?? {},
+    })
+    return {
+      available: true,
+      rowFound: true,
+      found: hit.found,
+      expression: hit.expression,
+      fallback: hit.fallback,
+      // 只在官方已接管 cookie 清理（0.2.2-rc.2+）时允许回收；更早的宿主还需要钉端口这条缓解。
+      cleanupSupported: canCleanLegacy({ nativeCleanup: options.nativeCleanup }),
+    }
+  }
+
+  /**
+   * 清掉本插件历史版本注入的残留（v0.7.1）：删除 `webserver` 行的 port 表达式。
+   *
+   * 安全边界：只删 `classifyLegacyPort` 认得出的那一种形态；用户手写的字面量端口与
+   * 用户自己的表达式一律不碰。写走同一个 `configEditor.edit`（schema 校验 + 原子写 + HMR）。
+   *
+   * @param {{nativeCleanup?: boolean}} [options]
+   */
+  async function cleanLegacy(options = {}) {
+    const state = readLegacy(options)
+    if (state.available === false) return { kind: 'no-editor', state }
+    if (state.found !== true) return { kind: 'nothing-to-clean', state }
+    if (state.cleanupSupported !== true) return { kind: 'unsupported-host', state }
+    const ce = getEditor()
+    const spec = MANAGED_ROWS.webserver
+    const entry = ce.entries().find((row) => row.options.id === spec.id)
+    if (entry === undefined) return { kind: 'no-entry', state }
+    const before = plain(entry.options.config ?? {})
+    const { next, changed } = withoutLegacyInjection({ current: before })
+    if (changed.length === 0) return { kind: 'noop', state }
+    const written = await attemptEdit(entry, next)
+    if (!written.ok) return { kind: 'failed', message: written.message, nested: written.nested === true, state }
+    try {
+      keepSnapshotRow(snapFile(), spec.id, {
+        name: spec.name,
+        profile: snapshotKey(ce.documentPath ?? ''),
+        config: before,
+        at: now(),
+        generatedAt: new Date(now()).toISOString(),
+        reason: 'legacy-injection',
+      }, fsModule)
+    } catch { /* 快照失败不影响已落盘的清理，只是少了回滚 */ }
+    const after = ce.entries().find((row) => row.options.id === spec.id)
+    return {
+      kind: 'cleaned',
+      changed,
+      removed: state.expression,
+      fallback: state.fallback,
+      effective: after?.options?.config?.port,
+      state: readLegacy(options),
+    }
+  }
+
+  return { check, plan, fix, revert, readGuard, writeGuard, readLegacy, cleanLegacy, state }
 }
 
 /**

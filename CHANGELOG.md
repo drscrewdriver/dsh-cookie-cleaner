@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.1 (2026-11-17)
+
+- **修复：合法空 flow map 被判成整层 YAML 非法（issue #1）**。`src/patch-read.js` 三处把「值形如 `{...}`」直接 `fail('inline flow map')`，于是一处 `providers: {}` 让 profile 层**整层失效**——其后 112 行全部不再处理，面板对 connection / webserver 双双报「会失效」，「修复」按钮永远写不进去。而 `{}` 是合法 YAML。
+- **修法**：值形态不再参与「整层是否合法」的判定。新增 `parseFlowMap()` / `splitFlow()` 尽力解析 `{}` / `{a: 1, b: "x"}`；跨行 flow（本行只有开括号）与嵌套 flow 降级为「值未知」，**不升级为整层失败**。真结构性错误（多文档 `---`、锚点 `&x`、模板根 `[]` 后接分块行）仍照旧 `ok:false`。
+- **测试**：`patch-read.test.js` 原「超出子集的构造一律 ok:false」用例把 flow map 与锚点/多文档并列，等于把 bug 当规范——已拆成两条：结构错误仍拒，flow map 改判合法并断言「坏值前后所有行都读得到」。新增跨行 flow / 嵌套 flow / `config: {}` 形态。
+- **新增：历史注入残留清理（适用于 0.2.2-rc.2+）**。0.2.1 之前本插件提供过「应用端口」动作，把 `webserver.port` 写成 `ctx.webStartup.port ?? +<n>`；能力删了，但**已写进用户 profile 的那行不会自己消失**，仍在生效（启动层没传 `--port` 时落在当年那个数上，且卸载插件后残留仍在）。
+  - 新增 `src/legacy-injection.js`：`classifyLegacyPort()` 只认「`!!js` 表达式 + 指向 `webStartup.port` + fallback 是数字」这一种形态；`findLegacyInjection()` 读现状；`withoutLegacyInjection()` **删键而非写回 bundle 原值**（少一个键 = 回落到 bundle 默认，这才是"清掉插件写的东西"；抄 bundle 表达式会把上游实现细节固化进用户配置）。
+  - **不碰**：用户手写的字面量端口（P8 那类，坚持"看到但不替你改"）、用户自己的表达式（如 `process.env.PORT ?? 8080`）、缺 fallback 的写法、别的 ctx 路径。
+  - **只在官方已接管 cookie 清理的宿主上开放**（`detectNativeCleanup()` 判据，即 0.2.2-rc.2+）。更早的宿主钉端口仍是上游给的可选缓解，那里**只报告不清理**。另留 `supportsLegacyCleanup()` 按版本串判定（完整单测，供诊断）。
+  - 三个入口：面板 `LegacyPanel`（有残留才显示 + 「清理这一行」）、命令 `dsh-cookie-cleaner legacy`（只读报告，离线进程不直改 profile）、API `/legacy/get` + `/legacy/clean`（与客户端路由逐字一致，测试双向钉住）。写仍走 `configEditor.edit`（schema 校验 + 原子写 + HMR）并留快照可回滚。
+- **新增：`detectNativeCleanup()` / `scanBinaryFor()`**（`src/core.js`）。官方在 desktop 0.2.2-rc.2 起自带 `removeLegacyHostCookies`（走 Electron `session.cookies.remove` 直删 jar），比下发 Set-Cookie 更彻底。插件跑在 `ELECTRON_RUN_AS_NODE=1` 的纯 Node 子进程，**拿不到 `session.cookies`**，照抄不了官方手法——只能探测后让位。asar 是容器文件、纯 Node 的 `fs` 读不到内部路径，故用**二进制分块扫描**找标记字符串（跨块边界不丢、命中即停、200MB 不进内存）。读不到一律判 `present:false`，宁可多做一次幂等清理也不误判成"官方已管"。
+- **运行期守护：退休与抬预算拆成两个独立开关**。原 `runtimeGuard` 一个开关把两件事捆在一起，用户为了清 cookie 被迫放宽 431 阈值。
+  - `retireStale`（**默认开**）：只发 `Set-Cookie: ...; Max-Age=0` 让浏览器丢历史启动 cookie，保留当前 authority 那条 + tail-keep。实测确认：握手响应里会话 cookie **恒排第一**、desktop `authenticateWebHost` 解析出的 `hostCookie` 正确，追加的删除行不会污染它；当前端口那条永不删。可逆、不碰 SQLite、不降鉴权强度 → 默认开是安全的。
+  - `raiseHeaderBudget`（**默认关**）：放宽 431 触发线属于「调松安全阈值」，不该被清理动作顺带打开。
+  - 官方清理存在时 `retireStale` 自动让位（两套一起跑只会让水位读数抖动）；水位观测臂仍**无条件挂**，与两个开关都解耦。
+  - 旧字段 `runtimeGuard: true` 保留为「一键全开」的兼容写法；面板相应改为两个勾选框（新增 9 语 `guard.enableRetire` / `guard.enableBudget`，移除已无引用的 `guard.enable`）。
+- **全量 gate**：223 tests / 222 pass / 1 skip / 0 fail（lint + typecheck + build 全绿）。
+
 ## 0.6.4 (2026-11-14)
 
 - **修复：守护关闭时水位归零（接线错位）**。原因两层：

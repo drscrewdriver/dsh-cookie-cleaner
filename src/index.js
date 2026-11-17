@@ -18,7 +18,7 @@ import { installSettingsWaist } from './settings-waist.js'
 import { createPatchGuard } from './patch-guard.js'
 import { cookieBrief, registerPatchRoutes } from './api-routes.js'
 import { installCookieObserver, installRuntimeGuard, DEFAULTS as GUARD_DEFAULTS, LIMITS as GUARD_LIMITS } from './runtime-guard.js'
-import { MAX_HEADER_BYTES } from './core.js'
+import { MAX_HEADER_BYTES, detectNativeCleanup } from './core.js'
 
 /** Cordis 插件名（与 cordis.patch.yml 的 id 一致）。 */
 export const name = 'cookie-cleaner'
@@ -31,7 +31,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
   lang: '', // 输出语言（zh/en/ja/ko/fr/de/it/ru/es）；空=跟环境探测，探不到则 zh
   guardDays: 1, // patch 体检的目标cookie 绝对寿命（宿主 schema 要求 ≥1）
   guardMode: 'literal', // 'literal'=只动目标键 | 'expression'=把 bundle 层的 !!js 表达式还原回去
-  // 运行期守护（薄整合自 dsh-auth-cookie-guard）：默认关，开启后插件只发响应头，仍然不碰 SQLite。
+  // 运行期守护（薄整合自 dsh-auth-cookie-guard）：**拆成两个独立开关**（v0.7.0）。
+  // retireStale 默认开：只发 `Set-Cookie: ...; Max-Age=0` 让浏览器丢历史启动 cookie，
+  //   保留当前 authority 那条 + tail-keep，可逆、不碰 SQLite、不降鉴权强度 → 默认开是安全的。
+  // raiseHeaderBudget 默认关：放宽 431 触发线属于「调松安全阈值」，不该被清理动作顺带打开。
+  retireStale: true,
+  raiseHeaderBudget: false,
+  // 兼容旧字段：runtimeGuard=true 等价于同时打开上面两项。
   runtimeGuard: false,
   maxHeaderBytes: GUARD_DEFAULTS.maxHeaderBytes,
   keep: GUARD_DEFAULTS.keep,
@@ -46,7 +52,9 @@ export const Config = z.object({
   lang: z.string().default(DEFAULT_SETTINGS.lang).volatile().description(`输出语言：${LANGS.join('/')}（留空=自动探测）`),
   guardDays: z.natural().min(1).default(DEFAULT_SETTINGS.guardDays).volatile().description('cookie 体检与修复写入的目标绝对寿命（天）——这是防 431 真正有效的那一项'),
   guardMode: z.string().default(DEFAULT_SETTINGS.guardMode).volatile().description("patch 修复形态：'literal' 只动目标键，'expression' 同时把 bundle 层的 !!js 表达式还原回去"),
-  runtimeGuard: z.boolean().default(DEFAULT_SETTINGS.runtimeGuard).volatile().description('运行期守护（默认关）：开启后抬 server.maxHeaderSize，并在握手响应里下发 Set-Cookie Max-Age=0 让浏览器自己退休陈旧启动 cookie；仍不直接写 SQLite'),
+  retireStale: z.boolean().default(DEFAULT_SETTINGS.retireStale).volatile().description('退休陈旧启动 cookie（默认开）：在响应里下发 Set-Cookie Max-Age=0，让浏览器自己丢掉历史端口的 dsh-auth-*；保留当前端口那条，不碰 SQLite'),
+  raiseHeaderBudget: z.boolean().default(DEFAULT_SETTINGS.raiseHeaderBudget).volatile().description('抬高监听器头部预算（默认关）：把 server.maxHeaderSize 调到 maxHeaderBytes，放宽 431 的触发线——这是调松安全阈值，需显式开启'),
+  runtimeGuard: z.boolean().default(DEFAULT_SETTINGS.runtimeGuard).volatile().description('旧开关（兼容保留）：true = 同时打开 retireStale 与 raiseHeaderBudget'),
   maxHeaderBytes: z.natural().default(DEFAULT_SETTINGS.maxHeaderBytes).volatile().description(`运行期守护的监听器头部预算（夹到 ${GUARD_LIMITS.maxHeaderBytes[0]}–${GUARD_LIMITS.maxHeaderBytes[1]} 字节）`),
   keep: z.natural().default(DEFAULT_SETTINGS.keep).volatile().description(`运行期守护保留的尾部 cookie 条数（夹到 ${GUARD_LIMITS.keep[0]}–${GUARD_LIMITS.keep[1]}；当前端口那条另行保底）`),
   retireAbove: z.natural().default(DEFAULT_SETTINGS.retireAbove).volatile().description(`阈值触发：启动 cookie 条数 > 此值才开始退休（0=不设阈值，每次按 keep 收敛；夹到 ${GUARD_LIMITS.retireAbove[0]}–${GUARD_LIMITS.retireAbove[1]}）`),
@@ -212,7 +220,7 @@ export function apply(ctx, config = {}) {
   })
 
   // ── 运行期守护（薄整合自 dsh-auth-cookie-guard）——与 configEditor 解耦：只需 webServer 就绪 ──
-  // 默认关；runtimeGuard=true 时抬监听器预算 + 在 'request' 事件上 prepend retire 下发 Set-Cookie 删除行。
+  // v0.7.0：退休与抬预算拆成两个独立开关；且**优先让位给官方清理**（见下方 detectNativeCleanup）。
   // **不直接写 SQLite**，不开 session.cookies，只走 HTTP。
   ctx.inject(['webServer'], (gctx) => {
     const cfg = current()
@@ -229,17 +237,36 @@ export function apply(ctx, config = {}) {
       onObserve: (info) => { if (info.minted > 0) log(`cookie 水位：${info.minted} 条 dsh-auth-*（Cookie 头 ${info.headerBytes} B）`) },
     })
     gctx.effect(() => () => { observer?.dispose?.(); observer = null }, `${name}: cookie observer`)
-    if (cfg.runtimeGuard !== true) return
-    // ② 退休与抬预算：仍只在 runtimeGuard 开启时挂。
+    // ② 退休与抬预算：两个独立开关（v0.7.0）。旧字段 runtimeGuard=true 视为两者全开。
+    const legacyOn = cfg.runtimeGuard === true
+    const budgetOn = legacyOn || cfg.raiseHeaderBudget === true
+    // 官方清理优先：宿主外壳自己会删 jar 里的 dsh-auth-*（desktop 0.2.2-rc.2+ 的
+    // `removeLegacyHostCookies`，走 Electron `session.cookies.remove`，比我们发 Set-Cookie 更彻底），
+    // 此时插件不该再抢着做同一件事——两套清理同时跑只会互相抵消日志、并让水位读数抖动。
+    const native = detectNativeCleanup()
+    let retireOn = legacyOn || cfg.retireStale === true
+    if (retireOn && native.present) {
+      retireOn = false
+      log(`cookie 退休让位给官方清理（${native.evidence}）：宿主已自带 jar 清理，插件不再下发 Set-Cookie`)
+    }
+    if (!retireOn && !budgetOn) {
+      log('运行期守护未启用：retireStale / raiseHeaderBudget 均为关（水位观测仍在跑）')
+      return
+    }
     const dispose = installRuntimeGuard(server, {
       maxHeaderBytes: cfg.maxHeaderBytes,
+      raiseBudget: budgetOn,
+      retire: retireOn,
       keep: cfg.keep,
       retireAbove: cfg.retireAbove,
       webServer,
-      onRetire: (info) => log(`runtime guard: retired ${info.emitted}/${info.stale}, retained ${info.retained} (total ${info.total})`),
+      onRetire: (info) => log(`cookie 退休：${info.emitted}/${info.stale} 条，保留 ${info.retained}（合计 ${info.total}）`),
     })
-    log(`runtime guard ON：budget=${String(cfg.maxHeaderBytes)} B, keep=${String(cfg.keep)}, retireAbove=${String(cfg.retireAbove)}, cap=96/response`)
-    gctx.effect(() => () => { dispose(); log('runtime guard OFF (disposed)') }, `${name}: runtime guard`)
+    log(
+      `运行期守护：retireStale=${String(retireOn)}, raiseHeaderBudget=${String(budgetOn)}`
+      + `, budget=${String(cfg.maxHeaderBytes)} B, keep=${String(cfg.keep)}, retireAbove=${String(cfg.retireAbove)}, cap=96/response`,
+    )
+    gctx.effect(() => () => { dispose(); log('运行期守护已卸载') }, `${name}: runtime guard`)
   })
 
   // ── patch 体检/修复守卫（只在 configEditor 就绪后存在；老线回调不触发，插件其余面照常）──
@@ -262,6 +289,11 @@ export function apply(ctx, config = {}) {
       // 运行期守护面板臂：读当前生效值 / 写白名单四键（都走本插件自己的 configEditor 行）
       getGuard: () => guard.readGuard(),
       setGuard: (patch) => guard.writeGuard(patch),
+      // 历史注入残留（v0.7.1）：清理能力以「官方是否已自带 cookie 清理」为准（0.2.2-rc.2+）。
+      // 探测每次实时做（外壳可被升级/降级），结果不进缓存——一次 asar 扫描 ~0.7s，
+      // 只在用户点开这条时才发生，不拖启动。
+      getLegacy: () => guard.readLegacy({ nativeCleanup: detectNativeCleanup().present }),
+      cleanLegacy: () => guard.cleanLegacy({ nativeCleanup: detectNativeCleanup().present }),
     })
     if (offs.length === 0) return
     sctx.effect(() => () => offs.forEach((off) => { try { off() } catch { /* 已回收 */ } }), `${name}: patch routes`)

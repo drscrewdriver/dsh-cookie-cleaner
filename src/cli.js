@@ -45,6 +45,7 @@ function usage() {
 patch 体检（profile 的 cordis.patch.yml 结构，不碰 cookie 库）：
   dsh-cookie-cleaner patch [check]         离线体检：行在不在、name 对不对、值合不合法、home 层影子
   dsh-cookie-cleaner patch plan            输出可直接粘贴的覆盖行（目标值已就位）
+  dsh-cookie-cleaner legacy                只读：报告旧版插件写进 profile 的 port 注入残留
   --profile <name>      体检哪个 profile（默认 desktop）
   --patch-file <路径>  直接指定 patch 文件（优先于 --profile）
   --target-days <N>     目标 cookie 绝对寿命（≥ 1，默认 1）
@@ -83,14 +84,14 @@ function parseArgs(argv) {
     else if (arg.startsWith('--target-days=')) options.targetDays = Number(arg.slice('--target-days='.length))
     else if (!arg.startsWith('-') && options.command === '' && !options.clean) {
       // 位置参数只认 `patch`（cookie 面保持无子命令的原样，不破坏 0.1.x 用法习惯）
-      if (arg !== 'patch') {
+      if (arg !== 'patch' && arg !== 'legacy') {
         process.stderr.write(`未知参数：${arg}\n\n${usage()}`)
         process.exitCode = 1
         return undefined
       }
-      options.command = 'patch'
+      options.command = arg
       const next = argv[i + 1]
-      if (next === 'check' || next === 'plan') { options.sub = next; i += 1 }
+      if (arg === 'patch' && (next === 'check' || next === 'plan')) { options.sub = next; i += 1 }
     }
     else {
       process.stderr.write(`未知参数：${arg}\n\n${usage()}`)
@@ -129,6 +130,46 @@ function runPatch(options) {
   process.exitCode = result.level === 'fail' || result.level === 'skipped' ? 1 : 0
 }
 
+/**
+ * `legacy` 子命令：**只读**报告旧版插件写进 profile 的 port 注入残留。
+ *
+ * 为什么 CLI 只报不改：清理必须走 `configEditor.edit`（schema 校验 + 原子写 + HMR），
+ * 那是宿主运行期的能力；离线进程直改 profile 会绕过校验，正是本插件一直避免的做法。
+ * 所以离线只给"有/没有 + 原表达式 + 该怎么做"，写留给面板或命令面。
+ */
+function runLegacy(options) {
+  const file = options.patchFile !== ''
+    ? path.resolve(options.patchFile)
+    : path.join(dshHomeOf(process.env), 'profiles', options.profile, 'cordis.patch.yml')
+  const read = readPatchFile(file)
+  if (read.exists !== true) {
+    process.stdout.write(`patch 文件不存在：${file}\n`)
+    process.exitCode = 1
+    return
+  }
+  if (read.parsed.ok !== true) {
+    process.stdout.write(`patch 文件解析失败（${read.parsed.reason}）：${file}\n`)
+    process.exitCode = 1
+    return
+  }
+  const row = findOverrideRow(read.parsed, 'webserver')
+  const port = row?.config?.port
+  const hit = port !== null && typeof port === 'object' && typeof port.__jsExpr === 'string'
+    ? /^\s*ctx\.webStartup\.port\s*\?\?\s*(\+?\s*\d+)\s*$/.exec(port.__jsExpr)
+    : null
+  if (hit === null) {
+    process.stdout.write(`没有历史注入残留（${file}）\n`)
+    return
+  }
+  process.stdout.write(
+    `发现历史注入残留：webserver.port = !!js ${port.__jsExpr}\n`
+    + `  这是旧版 dsh-cookie-cleaner 的「应用端口」动作写的（0.2.1 起该能力已删除）。\n`
+    + `  现在生效的就是你钉的 ${hit[1].replace(/[+\s]/g, '')}，启动层传来的 --port 压不动它。\n`
+    + `  清理：在面板「历史注入」处点清理（需宿主 0.2.2-rc.2+，官方已接管 cookie 清理），\n`
+    + `  或手动删掉 ${file} 里那一行 port。\n`,
+  )
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options === undefined) return
@@ -153,6 +194,10 @@ function main() {
   const env = process.env
   if (options.command === 'patch') {
     runPatch(options)
+    return
+  }
+  if (options.command === 'legacy') {
+    runLegacy(options)
     return
   }
   try {

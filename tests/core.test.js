@@ -122,3 +122,48 @@ test('buildDeleteStatement 拒绝可疑的 host_key / 前缀', () => {
   assert.throws(() => buildDeleteStatement({ hostKeys: ["127.0.0.1' OR '1" ] }), /非法 host_key/)
   assert.throws(() => buildDeleteStatement({ prefix: 'dsh-auth%;--' }), /非法 cookie 名前缀/)
 })
+
+// ── v0.7.0：官方清理探测（决定插件是「让位」还是「兜底」）────────────────
+import { detectNativeCleanup, scanBinaryFor } from '../src/core.js'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+test('detectNativeCleanup：外壳里有官方清理函数 → present:true', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-native-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  mkdirSync(join(dir, 'resources'), { recursive: true })
+  writeFileSync(join(dir, 'resources', 'app.asar'), 'x'.repeat(2000) + 'removeLegacyHostCookies' + 'y'.repeat(2000))
+  const r = detectNativeCleanup({ installRoot: dir, readFile: undefined })
+  assert.equal(r.present, true, r.evidence)
+  assert.match(r.evidence, /removeLegacyHostCookies/)
+})
+
+test('detectNativeCleanup：找不到实现 → present:false（保持插件兜底）', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-native2-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  mkdirSync(join(dir, 'resources'), { recursive: true })
+  writeFileSync(join(dir, 'resources', 'app.asar'), 'no marker here at all')
+  const r = detectNativeCleanup({ installRoot: dir })
+  assert.equal(r.present, false, '读不到就必须保持兜底，不能误判成官方已管')
+})
+
+test('detectNativeCleanup：路径全不存在也不抛（fail-safe 到兜底）', () => {
+  const r = detectNativeCleanup({ installRoot: join(tmpdir(), 'definitely-not-here-' + Date.now()) })
+  assert.equal(r.present, false)
+  assert.ok(Array.isArray(r.checked))
+})
+
+test('scanBinaryFor：跨块边界的标记也能命中（不被 4MB 分块截断漏掉）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-scan-'))
+  const file = join(dir, 'blob.bin')
+  // 标记横跨 64 字节块的边界
+  writeFileSync(file, Buffer.concat([Buffer.alloc(60, 0x41), Buffer.from('removeLegacyHostCookies', 'utf8'), Buffer.alloc(60, 0x42)]))
+  const hit = scanBinaryFor(file, 'removeLegacyHostCookies', { chunkBytes: 64 })
+  assert.equal(hit, 'removeLegacyHostCookies', '跨块边界不得漏判')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('scanBinaryFor：文件不存在 → null，不抛', () => {
+  assert.equal(scanBinaryFor(join(tmpdir(), 'nope-' + Date.now()), 'x'), null)
+})

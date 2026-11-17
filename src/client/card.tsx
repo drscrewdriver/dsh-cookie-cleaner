@@ -10,7 +10,7 @@ import * as React from 'react'
 
 import { render } from './locales'
 import { postJson, routes } from './routes'
-import type { ActionView, CheckView, Finding, GuardView, RowView } from './routes'
+import type { ActionView, CheckView, Finding, GuardView, LegacyView, RowView } from './routes'
 
 export interface CardProps {
   /** 当前语言的取词函数（跟着宿主 locale 走，卡片不缓存旧值）。 */
@@ -83,9 +83,54 @@ function CookieLine({ cookie, t }: { cookie?: CheckView['cookie']; t: (key: stri
 }
 
 /**
- * 运行期守护面板：一个开关（runtimeGuard）+ 两个阈值（retireAbove / keep）。
+ * 运行期守护面板：两个独立开关（retireStale 清理 / raiseHeaderBudget 抬预算）+ 两个阈值（retireAbove / keep）。
+ * v0.7.0 之前是一个 runtimeGuard 全包——用户为了清 cookie 被迫放宽 431 阈值，故拆开。
  * 读写都走后端桥（configEditor 写本插件自己那行），写后回显生效值——不凭手写 YAML。
  */
+/**
+ * 历史注入残留面板（v0.7.1）：旧版插件写进 profile 的 `port` 表达式还在不在。
+ *
+ * 为什么单独一块而不是塞进体检结果：这不是"配置对不对"，是"插件自己留下的东西还在不在"，
+ * 与 cookie 寿命无关。清理只在官方已接管 cookie 清理的宿主（0.2.2-rc.2+）上开放，
+ * 更早的宿主仍需要钉端口这条缓解，所以那里只显示不提供按钮。
+ */
+function LegacyPanel({ t }: { t: (key: string) => string }): React.ReactElement | null {
+  const [v, setV] = React.useState<LegacyView | undefined>(undefined)
+  const [busy, setBusy] = React.useState(false)
+  const [note, setNote] = React.useState('')
+  const mounted = React.useRef(true)
+  React.useEffect(() => {
+    mounted.current = true
+    postJson<LegacyView>(routes.legacyGet, {}).then((next) => { if (mounted.current) setV(next) }).catch(() => { /* 无 config-editor 时静默 */ })
+    return () => { mounted.current = false }
+  }, [])
+  if (v === undefined) return null
+  if (v.available === false || v.found !== true) return null
+  const clean = async () => {
+    setBusy(true); setNote('')
+    try {
+      const next = await postJson<LegacyView>(routes.legacyClean, {})
+      if (!mounted.current) return
+      setV(next.state ?? v)
+      setNote(next.kind === 'cleaned' ? t('legacy.cleaned') : t('legacy.noop'))
+    } catch (error) {
+      if (mounted.current) setNote(render(t('state.failed'), { message: String((error as Error).message ?? error) }))
+    } finally {
+      if (mounted.current) setBusy(false)
+    }
+  }
+  return (
+    <div style={{ display: 'grid', gap: 6, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--dsw-color-border)' }}>
+      <div style={{ fontWeight: 600 }}>{t('legacy.title')}</div>
+      <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>{render(t('legacy.found'), { expr: v.expression ?? '?' })}</div>
+      {v.cleanupSupported === true
+        ? <button type="button" disabled={busy} onClick={() => void clean()} style={{ justifySelf: 'start', padding: '3px 10px', borderRadius: 6, border: '1px solid var(--dsw-color-border)', background: 'var(--dsw-color-surface)', color: 'var(--dsw-color-text)', cursor: busy ? 'default' : 'pointer' }}>{t('legacy.clean')}</button>
+        : <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>{t('legacy.unsupported')}</div>}
+      {note !== '' ? <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-text)' }}>{note}</div> : null}
+    </div>
+  )
+}
+
 function GuardPanel({ t }: { t: (key: string) => string }): React.ReactElement | null {
   const [g, setG] = React.useState<GuardView | undefined>(undefined)
   const [busy, setBusy] = React.useState(false)
@@ -105,7 +150,13 @@ function GuardPanel({ t }: { t: (key: string) => string }): React.ReactElement |
     setG(next)
     setBusy(true); setNote('')
     try {
-      const v = await postJson<GuardView>(routes.guardSet, { runtimeGuard: next.runtimeGuard, maxHeaderBytes: next.maxHeaderBytes, keep: next.keep, retireAbove: next.retireAbove })
+      const v = await postJson<GuardView>(routes.guardSet, {
+        retireStale: next.retireStale,
+        raiseHeaderBudget: next.raiseHeaderBudget,
+        maxHeaderBytes: next.maxHeaderBytes,
+        keep: next.keep,
+        retireAbove: next.retireAbove,
+      })
       if (!mounted.current) return
       setG(v)
       setNote(v.kind === 'noop' ? t('guard.noop') : t('guard.saved'))
@@ -123,8 +174,12 @@ function GuardPanel({ t }: { t: (key: string) => string }): React.ReactElement |
     <div style={{ display: 'grid', gap: 6, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--dsw-color-border)' }}>
       <div style={{ fontWeight: 600 }}>{t('guard.title')}</div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <input type="checkbox" checked={g.runtimeGuard} disabled={busy} onChange={(e) => void commit({ ...g, runtimeGuard: e.target.checked })} />
-        {t('guard.enable')}
+        <input type="checkbox" checked={g.retireStale} disabled={busy} onChange={(e) => void commit({ ...g, retireStale: e.target.checked })} />
+        {t('guard.enableRetire')}
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input type="checkbox" checked={g.raiseHeaderBudget} disabled={busy} onChange={(e) => void commit({ ...g, raiseHeaderBudget: e.target.checked })} />
+        {t('guard.enableBudget')}
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.9em' }}>
         {t('guard.retireAbove')}
@@ -238,6 +293,8 @@ export function PatchCard({ t }: CardProps): React.ReactElement {
       <CookieLine cookie={state?.cookie} t={t} />
       {/* 运行期守护：开关 + 两个阈值（写本插件自己那行，写后回显生效值） */}
       <GuardPanel t={t} />
+      {/* 历史注入残留：旧版「应用端口」写进 profile 的表达式（有才显示） */}
+      <LegacyPanel t={t} />
       {/* 审计行：修复前根本没有覆盖行时（快照里无旧值），不能说“修复前 ?”——
           那是把“无据”伪装成一个值；改说“此前无覆盖行”。 */}
       {state?.lastFix

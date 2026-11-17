@@ -349,3 +349,57 @@ test('onRetire 拿到 total/retained/stale/emitted 四元组；名字与值不�
     await srv.close()
   }
 })
+
+// ────────────────────────────────────────────────────────────────────
+// v0.7.0：退休与抬预算拆成两个开关（清理默认开，放宽阈值仍默认关）
+
+test('retire:false → 不发任何删除行（清理可单独关闭）', async () => {
+  const current = minted('current')
+  const stale = [minted('x1'), minted('x2')]
+  const srv = await withServer((_, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.end('ok')
+  })
+  try {
+    installRuntimeGuard(srv.server, { keep: 1, retire: false })
+    const r = await fire(srv.port, { cookie: buildCookieHeader([...stale, current]), host: `127.0.0.1:${srv.port}` })
+    assert.deepEqual(r.setCookies, [], '关掉退休就不该有删除行')
+  } finally {
+    await srv.close()
+  }
+})
+
+test('raiseBudget:false → 不动 server.maxHeaderSize（清理不等于放宽阈值）', async () => {
+  const srv = await withServer((_, res) => {
+    res.writeHead(200)
+    res.end('ok')
+  })
+  try {
+    const before = srv.server.maxHeaderSize
+    const dispose = installRuntimeGuard(srv.server, { maxHeaderBytes: 65536, raiseBudget: false })
+    assert.equal(srv.server.maxHeaderSize, before, '关掉抬预算就必须保持原值')
+    dispose()
+    assert.equal(srv.server.maxHeaderSize, before)
+  } finally {
+    await srv.close()
+  }
+})
+
+test('两个开关互相独立：只开退休时，清理照常生效而预算不变', async () => {
+  const current = minted('current-2')
+  const stale = [minted('y1'), minted('y2'), minted('y3')]
+  const srv = await withServer((_, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.end('ok')
+  })
+  try {
+    const before = srv.server.maxHeaderSize
+    installRuntimeGuard(srv.server, { keep: 1, retire: true, raiseBudget: false })
+    assert.equal(srv.server.maxHeaderSize, before, '预算未被改动')
+    const r = await fire(srv.port, { cookie: buildCookieHeader([...stale, current]), host: `127.0.0.1:${srv.port}` })
+    assert.ok(r.setCookies.some((l) => l.includes('Max-Age=0')), '退休仍要照常下发删除行')
+    assert.ok(!r.setCookies.some((l) => l.startsWith(`${current}=;`)), '当前 authority 的 cookie 永远保留')
+  } finally {
+    await srv.close()
+  }
+})

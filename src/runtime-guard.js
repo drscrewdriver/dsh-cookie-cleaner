@@ -139,10 +139,18 @@ function normalizeCookieValues(value) {
 /**
  * 装配运行期守护：抬 maxHeaderSize、挂 retire 监听；返回 dispose。
  *
+ * v0.7.0：**「退休陈旧 cookie」与「抬 header 预算」拆成两个独立开关**。
+ * 退休只发 `Set-Cookie: ...; Max-Age=0` 让浏览器自己丢历史条目，保留当前 authority 那条，
+ * 可逆、无持久副作用，因此默认开；抬预算改的是 Node 监听器属性（放宽 431 的触发线），
+ * 属于「把安全阈值调松」，仍默认关。两者合在一个开关里会让用户为了清 cookie 被迫放宽阈值。
+ *
  * @param {import('node:http').Server} server 原生 http.Server 引用（ctx.webServer.server）
  * @param {{
  *   maxHeaderBytes?: number,
+ *   raiseBudget?: boolean,
+ *   retire?: boolean,
  *   keep?: number,
+ *   retireAbove?: number,
  *   webServer?: { getOrigin?: () => string },
  *   onRetire?: (info: { total:number, retained:number, stale:number, emitted:number }) => void,
  * }} [opts]
@@ -155,10 +163,12 @@ export function installRuntimeGuard(server, opts = {}) {
   const keep = bounded(opts.keep, DEFAULTS.keep, LIMITS.keep)
   // 阈值触发：条目数 > retireAbove 才开始退休；0 = 不设阈值（每次按 keep 收敛，现状）
   const retireAbove = bounded(opts.retireAbove, DEFAULTS.retireAbove, LIMITS.retireAbove)
+  const raiseBudget = opts.raiseBudget !== false
+  const retireEnabled = opts.retire !== false
 
   // ① 抬预算：Node 每 accept 时读该属性，运行时赋值对新连接立即生效。
   const previous = server.maxHeaderSize
-  server.maxHeaderSize = maxHeaderBytes
+  if (raiseBudget) server.maxHeaderSize = maxHeaderBytes
 
   // 无 Host 头的请求兜底用监听器自己的 origin（webServer 有 getOrigin 就用；否则 http:）
   const { protocol, boundName } = listenerIdentity(opts.webServer ?? {})
@@ -191,15 +201,15 @@ export function installRuntimeGuard(server, opts = {}) {
     armCookies(res, lines)
     opts.onRetire?.({ total: names.length, retained: retained.size, stale: stale.length, emitted: lines.length })
   }
-  server.prependListener('request', retire)
+  if (retireEnabled) server.prependListener('request', retire)
 
   let disposed = false
   return function dispose() {
     if (disposed) return
     disposed = true
-    server.removeListener('request', retire)
+    if (retireEnabled) server.removeListener('request', retire)
     // 等值判断：防止有别的插件在我们之后又改过，dispose 别把新值踩回旧值。
-    if (server.maxHeaderSize === maxHeaderBytes) server.maxHeaderSize = previous
+    if (raiseBudget && server.maxHeaderSize === maxHeaderBytes) server.maxHeaderSize = previous
   }
 }
 
