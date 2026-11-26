@@ -11,6 +11,7 @@ import * as React from 'react'
 import { render } from './locales'
 import { postJson, routes } from './routes'
 import type { ActionView, CheckView, Finding, GuardView, LegacyView, RowView } from './routes'
+import { mountStarRow } from './star-row-copy'
 
 export interface CardProps {
   /** 当前语言的取词函数（跟着宿主 locale 走，卡片不缓存旧值）。 */
@@ -305,6 +306,10 @@ export function PatchCard({ t }: CardProps): React.ReactElement {
         </div>
         : null}
       {state?.checkedAt ? <div style={{ fontSize: '0.85em', color: 'var(--dsw-color-muted)' }}>{render(t('lastCheck'), { at: state.checkedAt })}</div> : null}
+      <span
+        ref={(node: HTMLElement | null) => {
+          if (node && !node.firstChild) node.appendChild(mountStarRow())        }}
+      />
     </div>
   )
 }
